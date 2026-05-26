@@ -1,0 +1,33 @@
+# CMake and C++ build artifacts
+build/
+.cache/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Third-party dependencies
+third_party/asio/
+
+# Python caching and environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+htmlcov/
+.coverage
+venv/
+.venv/
+env/
+
+# Python packaging distribution
+dist/
+*.egg-info/
+
+# IDE and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
