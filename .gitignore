@@ -1,5 +1,6 @@
 # CMake and C++ build artifacts
 build/
+.generated/
 .cache/
 *.o
 *.a
