@@ -1,6 +1,7 @@
 #include "taskqueue/redis_broker.h"
 
 #include <iterator>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -8,6 +9,8 @@
 #include <sw/redis++/redis++.h>
 
 #include "taskqueue/clock.h"
+#include "taskqueue/metrics.h"
+#include "taskqueue/metrics_snapshot.h"
 #include "taskqueue/redis_keys.h"
 #include "taskqueue/retry_policy.h"
 #include "taskqueue/task_json.h"
@@ -15,6 +18,34 @@
 #include "taskqueue/task_status.h"
 
 namespace tq {
+
+namespace {
+
+constexpr const char kCounterPrefix[] = "c:";
+constexpr const char kHistogramPrefix[] = "h:";
+
+std::string CounterField(const std::string& name) {
+  return std::string(kCounterPrefix) + name;
+}
+
+std::string HistogramCountField(const std::string& name) {
+  return std::string(kHistogramPrefix) + name + ":count";
+}
+
+std::string HistogramSumField(const std::string& name) {
+  return std::string(kHistogramPrefix) + name + ":sum";
+}
+
+std::string HistogramMaxField(const std::string& name) {
+  return std::string(kHistogramPrefix) + name + ":max";
+}
+
+bool StartsWith(std::string_view value, std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         value.substr(0, prefix.size()) == prefix;
+}
+
+}  // namespace
 
 RedisBroker::RedisBroker(std::string redis_uri)
     : redis_(std::make_unique<sw::redis::Redis>(std::move(redis_uri))) {}
@@ -44,6 +75,7 @@ TaskId RedisBroker::Enqueue(const TaskMessage& task) {
                  static_cast<double>(*message.run_at_ms));
     redis_->hset(redis_keys::kStatus, message.id.Value(),
                  TaskStatusToString(TaskStatus::kPending));
+    RecordCounter(metrics_names::kTasksEnqueuedTotal);
     return message.id;
   }
 
@@ -51,6 +83,7 @@ TaskId RedisBroker::Enqueue(const TaskMessage& task) {
   redis_->lpush(redis_keys::kPending, ToJson(message).dump());
   redis_->hset(redis_keys::kStatus, message.id.Value(),
                TaskStatusToString(TaskStatus::kPending));
+  RecordCounter(metrics_names::kTasksEnqueuedTotal);
   return message.id;
 }
 
@@ -133,6 +166,7 @@ void RedisBroker::Ack(const TaskId& id) {
   redis_->hset(redis_keys::kResults, id.Value(),
                ToJson(TaskResult::Success()).dump());
   redis_->hdel(redis_keys::kFailures, id.Value());
+  RecordCounter(metrics_names::kTasksCompletedTotal);
 }
 
 void RedisBroker::Retry(const TaskMessage& task, const std::string& reason) {
@@ -153,6 +187,7 @@ void RedisBroker::Retry(const TaskMessage& task, const std::string& reason) {
   redis_->hset(redis_keys::kStatus, task.id.Value(),
                TaskStatusToString(TaskStatus::kRetrying));
   redis_->hset(redis_keys::kFailures, task.id.Value(), reason);
+  RecordCounter(metrics_names::kTasksRetriedTotal);
 }
 
 void RedisBroker::Fail(const TaskId& id, const std::string& reason) {
@@ -175,6 +210,7 @@ void RedisBroker::Fail(const TaskId& id, const std::string& reason) {
   redis_->hset(redis_keys::kFailures, id.Value(), reason);
   redis_->hset(redis_keys::kStatus, id.Value(),
                TaskStatusToString(TaskStatus::kDead));
+  RecordCounter(metrics_names::kTasksDeadLetteredTotal);
 }
 
 ParseResult<TaskStatus> RedisBroker::GetStatus(const TaskId& id) const {
@@ -333,6 +369,85 @@ std::vector<WorkerHeartbeat> RedisBroker::ListWorkers() const {
     workers.push_back(WorkerHeartbeatFromHash(fields));
   }
   return workers;
+}
+
+void RedisBroker::RecordRedisOperationError() {
+  try {
+    redis_->hincrby(redis_keys::kMetrics,
+                    CounterField(metrics_names::kRedisOperationErrorsTotal), 1);
+  } catch (const sw::redis::Error&) {
+  }
+}
+
+void RedisBroker::RecordCounter(const std::string& name, const std::int64_t delta) {
+  try {
+    redis_->hincrby(redis_keys::kMetrics, CounterField(name), delta);
+  } catch (const sw::redis::Error&) {
+    RecordRedisOperationError();
+  }
+}
+
+void RedisBroker::RecordDurationMs(const std::string& name,
+                                   const std::int64_t duration_ms) {
+  try {
+    redis_->hincrby(redis_keys::kMetrics, HistogramCountField(name), 1);
+    redis_->hincrby(redis_keys::kMetrics, HistogramSumField(name), duration_ms);
+
+    const auto current_max = redis_->hget(redis_keys::kMetrics, HistogramMaxField(name));
+    if (!current_max || std::stoll(*current_max) < duration_ms) {
+      redis_->hset(redis_keys::kMetrics, HistogramMaxField(name),
+                   std::to_string(duration_ms));
+    }
+  } catch (const sw::redis::Error&) {
+    RecordRedisOperationError();
+  }
+}
+
+MetricsSnapshot RedisBroker::CollectMetrics() const {
+  MetricsSnapshot snapshot;
+  std::unordered_map<std::string, std::string> fields;
+  try {
+    redis_->hgetall(redis_keys::kMetrics,
+                     std::inserter(fields, fields.end()));
+  } catch (const sw::redis::Error&) {
+    const_cast<RedisBroker*>(this)->RecordRedisOperationError();
+    ApplyLiveGauges(snapshot, *this);
+    return snapshot;
+  }
+
+  for (const auto& entry : fields) {
+    if (StartsWith(entry.first, kCounterPrefix)) {
+      snapshot.counters[entry.first.substr(std::char_traits<char>::length(
+          kCounterPrefix))] = std::stoll(entry.second);
+      continue;
+    }
+
+    if (!StartsWith(entry.first, kHistogramPrefix)) {
+      continue;
+    }
+
+    const std::string histogram_key =
+        entry.first.substr(std::char_traits<char>::length(kHistogramPrefix));
+    const auto suffix = histogram_key.rfind(':');
+    if (suffix == std::string::npos) {
+      continue;
+    }
+
+    const std::string histogram_name = histogram_key.substr(0, suffix);
+    const std::string field_suffix = histogram_key.substr(suffix + 1);
+    DurationHistogram& histogram = snapshot.histograms[histogram_name];
+    const std::int64_t value = std::stoll(entry.second);
+    if (field_suffix == "count") {
+      histogram.count = value;
+    } else if (field_suffix == "sum") {
+      histogram.sum_ms = value;
+    } else if (field_suffix == "max") {
+      histogram.max_ms = value;
+    }
+  }
+
+  ApplyLiveGauges(snapshot, *this);
+  return snapshot;
 }
 
 }  // namespace tq

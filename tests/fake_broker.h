@@ -9,6 +9,7 @@
 
 #include "taskqueue/broker.h"
 #include "taskqueue/broker_stats.h"
+#include "taskqueue/metrics.h"
 #include "taskqueue/task_result.h"
 #include "taskqueue/worker_heartbeat.h"
 
@@ -34,6 +35,10 @@ class FakeBroker final : public Broker {
   void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
                              std::int64_t ttl_seconds) override;
   std::vector<WorkerHeartbeat> ListWorkers() const override;
+  void RecordCounter(const std::string& name,
+                     std::int64_t delta = 1) override;
+  void RecordDurationMs(const std::string& name, std::int64_t duration_ms) override;
+  MetricsSnapshot CollectMetrics() const override;
 
   std::size_t PendingCount() const { return pending_.size(); }
   std::size_t DelayedCount() const { return delayed_.size(); }
@@ -62,6 +67,7 @@ class FakeBroker final : public Broker {
   };
 
   std::unordered_map<std::string, StoredWorkerHeartbeat> workers_;
+  mutable MetricsCollector metrics_;
 };
 
 }  // namespace testing

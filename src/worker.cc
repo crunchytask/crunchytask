@@ -8,6 +8,7 @@
 #include <spdlog/spdlog.h>
 
 #include "taskqueue/clock.h"
+#include "taskqueue/metrics.h"
 #include "taskqueue/retry_policy.h"
 #include "taskqueue/runtime_config.h"
 #include "taskqueue/scheduler.h"
@@ -144,6 +145,8 @@ void Worker::ProcessTask(const TaskMessage& task) {
   spdlog::info("task_start task_id={} task_name={}", task.id.Value(),
                task.name);
 
+  const auto started_at = std::chrono::steady_clock::now();
+
   if (!registry_.HasTask(task.name)) {
     spdlog::error("task_unknown task_id={} task_name={}", task.id.Value(),
                   task.name);
@@ -153,7 +156,13 @@ void Worker::ProcessTask(const TaskMessage& task) {
   }
 
   const TaskResult result = registry_.Execute(task.name, task.payload);
+  const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - started_at)
+                               .count();
+
   std::lock_guard<std::mutex> lock(broker_mutex_);
+  broker_.RecordDurationMs(metrics_names::kTaskExecutionDurationMs, duration_ms);
+
   if (result.success) {
     spdlog::info("task_complete task_id={} task_name={} success=true",
                  task.id.Value(), task.name);
@@ -163,6 +172,8 @@ void Worker::ProcessTask(const TaskMessage& task) {
 
   spdlog::warn("task_complete task_id={} task_name={} success=false error={}",
                task.id.Value(), task.name, result.error_message);
+
+  broker_.RecordCounter(metrics_names::kTasksFailedTotal);
 
   if (ShouldRetry(task)) {
     spdlog::info("task_retry task_id={} task_name={} retry_count={}",

@@ -36,10 +36,16 @@ class RedisBroker final : public Broker {
   void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
                              std::int64_t ttl_seconds) override;
   std::vector<WorkerHeartbeat> ListWorkers() const override;
+  void RecordCounter(const std::string& name,
+                     std::int64_t delta = 1) override;
+  void RecordDurationMs(const std::string& name, std::int64_t duration_ms) override;
+  MetricsSnapshot CollectMetrics() const override;
 
   static bool Ping(const std::string& redis_uri);
 
  private:
+  void RecordRedisOperationError();
+
   mutable std::unique_ptr<sw::redis::Redis> redis_;
 };
 

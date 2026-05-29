@@ -8,6 +8,8 @@
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
+#include "taskqueue/metrics.h"
+#include "taskqueue/metrics_snapshot.h"
 #include "taskqueue/runtime_config.h"
 #include "taskqueue/task_message.h"
 #include "taskqueue/task_result.h"
@@ -292,6 +294,31 @@ int main(int argc, char** argv) {
 
     tq::RedisBroker broker(redis_uri);
     PrintWorkers(broker.ListWorkers());
+  });
+
+  auto* metrics_cmd = app.add_subcommand("metrics", "Show task queue metrics");
+  std::string metrics_format = "prometheus";
+  metrics_cmd->add_option("--redis", redis_uri, "Redis connection URI");
+  metrics_cmd->add_option("--format", metrics_format,
+                          "Output format: prometheus or plain");
+  metrics_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
+    if (!EnsureRedis(redis_uri)) {
+      std::exit(1);
+    }
+
+    tq::RedisBroker broker(redis_uri);
+    const tq::MetricsSnapshot snapshot = tq::CollectMetrics(broker);
+    if (metrics_format == "plain") {
+      std::cout << tq::FormatMetricsPlainText(snapshot);
+      return;
+    }
+    if (metrics_format == "prometheus") {
+      std::cout << tq::FormatMetricsPrometheus(snapshot);
+      return;
+    }
+
+    ExitWithError("unsupported metrics format: " + metrics_format);
   });
 #else
   app.add_subcommand("enqueue", "Enqueue tasks (Redis support disabled)")

@@ -3,6 +3,8 @@
 #include <algorithm>
 
 #include "taskqueue/clock.h"
+#include "taskqueue/metrics.h"
+#include "taskqueue/metrics_snapshot.h"
 #include "taskqueue/retry_policy.h"
 
 namespace tq {
@@ -34,6 +36,7 @@ TaskId FakeBroker::Enqueue(const TaskMessage& task) {
     message.status = TaskStatus::kPending;
     AddDelayedTask(std::move(message), *task.run_at_ms);
     statuses_[task.id.Value()] = TaskStatus::kPending;
+    metrics_.IncrementCounter(metrics_names::kTasksEnqueuedTotal);
     return task.id;
   }
 
@@ -42,6 +45,7 @@ TaskId FakeBroker::Enqueue(const TaskMessage& task) {
   message.run_at_ms.reset();
   pending_.push_back(std::move(message));
   statuses_[task.id.Value()] = TaskStatus::kPending;
+  metrics_.IncrementCounter(metrics_names::kTasksEnqueuedTotal);
   return task.id;
 }
 
@@ -107,6 +111,7 @@ void FakeBroker::Ack(const TaskId& id) {
   statuses_[id.Value()] = TaskStatus::kSucceeded;
   failure_reasons_.erase(id.Value());
   results_[id.Value()] = TaskResult::Success();
+  metrics_.IncrementCounter(metrics_names::kTasksCompletedTotal);
 }
 
 void FakeBroker::Retry(const TaskMessage& task, const std::string& reason) {
@@ -124,6 +129,7 @@ void FakeBroker::Retry(const TaskMessage& task, const std::string& reason) {
 
   statuses_[task.id.Value()] = TaskStatus::kRetrying;
   failure_reasons_[task.id.Value()] = reason;
+  metrics_.IncrementCounter(metrics_names::kTasksRetriedTotal);
 }
 
 void FakeBroker::Fail(const TaskId& id, const std::string& reason) {
@@ -141,6 +147,7 @@ void FakeBroker::Fail(const TaskId& id, const std::string& reason) {
   dead_[id.Value()] = std::move(message);
   statuses_[id.Value()] = TaskStatus::kDead;
   failure_reasons_[id.Value()] = reason;
+  metrics_.IncrementCounter(metrics_names::kTasksDeadLetteredTotal);
 }
 
 ParseResult<TaskStatus> FakeBroker::GetStatus(const TaskId& id) const {
@@ -226,6 +233,21 @@ std::vector<WorkerHeartbeat> FakeBroker::ListWorkers() const {
     workers.push_back(entry.second.heartbeat);
   }
   return workers;
+}
+
+void FakeBroker::RecordCounter(const std::string& name, const std::int64_t delta) {
+  metrics_.IncrementCounter(name, delta);
+}
+
+void FakeBroker::RecordDurationMs(const std::string& name,
+                                  const std::int64_t duration_ms) {
+  metrics_.ObserveDurationMs(name, duration_ms);
+}
+
+MetricsSnapshot FakeBroker::CollectMetrics() const {
+  MetricsSnapshot snapshot = metrics_.Snapshot();
+  ApplyLiveGauges(snapshot, *this);
+  return snapshot;
 }
 
 }  // namespace testing

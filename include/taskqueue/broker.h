@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "taskqueue/metrics.h"
 #include "taskqueue/parse_result.h"
 #include "taskqueue/broker_stats.h"
 #include "taskqueue/task_id.h"
@@ -36,6 +37,9 @@ class Broker {
   virtual void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
                                      std::int64_t ttl_seconds) = 0;
   virtual std::vector<WorkerHeartbeat> ListWorkers() const = 0;
+  virtual void RecordCounter(const std::string& name, std::int64_t delta = 1) = 0;
+  virtual void RecordDurationMs(const std::string& name, std::int64_t duration_ms) = 0;
+  virtual MetricsSnapshot CollectMetrics() const = 0;
 };
 
 }  // namespace tq

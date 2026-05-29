@@ -9,6 +9,8 @@ add_library(
   retry_policy.cc
   runtime_config.cc
   worker_heartbeat.cc
+  metrics.cc
+  metrics_snapshot.cc
   clock.cc
   scheduler.cc
   thread_pool.cc

@@ -10,6 +10,7 @@ add_executable(taskqueue_tests
   retry_policy_test.cc
   runtime_config_test.cc
   worker_heartbeat_test.cc
+  metrics_test.cc
   scheduler_test.cc
   failure_modes_test.cc
   thread_pool_test.cc
