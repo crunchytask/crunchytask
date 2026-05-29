@@ -26,6 +26,7 @@ include(GNUInstallDirs)
 option(TASKQUEUE_BUILD_CLI "Build the taskq CLI" ON)
 option(TASKQUEUE_BUILD_EXAMPLES "Build example programs" ON)
 option(TASKQUEUE_BUILD_TESTS "Build unit and integration tests" ON)
+option(TASKQUEUE_BUILD_BENCHMARKS "Build operational benchmark executable" OFF)
 option(TASKQUEUE_ENABLE_REDIS "Enable Redis broker dependencies" ON)
 option(TASKQUEUE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
@@ -162,6 +163,10 @@ endif()
 
 if(TASKQUEUE_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(TASKQUEUE_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
 endif()
 
 if(TASKQUEUE_BUILD_TESTS)

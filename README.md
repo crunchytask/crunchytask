@@ -167,6 +167,19 @@ docker compose up -d redis
 
 Integration tests use `TASKQUEUE_REDIS_URI` when set (default `tcp://127.0.0.1:6379`). They skip cleanly if Redis is not reachable.
 
+## Benchmarks
+
+Operational limit benchmarks live under `benchmarks/` and are **not** run by `check`.
+
+```bash
+docker compose up -d redis
+cmake -S . -B build -DTASKQUEUE_BUILD_BENCHMARKS=ON
+cmake --build build --target taskqueue_bench
+./build/taskqueue_bench
+```
+
+Or use `./benchmarks/run_bench.sh`. Output is JSON (throughput, retry overhead, scheduling/reclaim latency). See [benchmarks/README.md](benchmarks/README.md).
+
 ## Roadmap
 
 **MVP is complete** (queue, worker, Redis broker, retries, delays, dead-letter, crash recovery, CLI, tests).
@@ -174,7 +187,6 @@ Integration tests use `TASKQUEUE_REDIS_URI` when set (default `tcp://127.0.0.1:6
 Optional polish:
 
 - Prometheus metrics and structured observability
-- Benchmarks
 - RabbitMQ or Protobuf wire format
 - Priority queues and routing
 - Worker heartbeat
