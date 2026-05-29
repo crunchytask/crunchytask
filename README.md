@@ -58,9 +58,11 @@ flowchart LR
 
 **Scheduler tick** (each worker poll): promote due delayed tasks → reclaim stale running tasks → reserve from pending.
 
+Redis also stores `taskq:results` (success payloads) and `taskq:failures` (latest failure reason per task id).
+
 ## Quick start
 
-**Prerequisites:** CMake 3.20+, C++20 compiler, Docker (for Redis).
+**Prerequisites:** CMake 3.24+, C++20 compiler, Docker (for Redis).
 
 ```bash
 git clone <repo>
@@ -72,13 +74,18 @@ cmake -S . -B build
 cmake --build build
 ```
 
+**Build outputs:** `build/taskq` (CLI), `build/producer` (enqueue example), `build/taskqueue_tests`.
+
 Default Redis URI: `tcp://127.0.0.1:6379` (override with `TASKQUEUE_REDIS_URI`).
 
 ### Demo (two terminals)
 
+Start the **worker first**. Enqueued tasks stay `pending` until a worker reserves them.
+
 Terminal 1 — worker:
 
 ```bash
+docker compose up -d redis
 ./build/taskq worker start --concurrency 4
 ```
 
@@ -97,6 +104,8 @@ task_id: <uuid>
 status: succeeded
 result: {"result":5}
 ```
+
+If `status` stays `pending`, confirm the worker is running in the other terminal and Redis is up.
 
 ## Example task: `add`
 
@@ -126,12 +135,13 @@ Programmatic enqueue (library): see `examples/producer.cc`.
 
 | Command | Description |
 |---------|-------------|
-| `taskq enqueue <name> [--payload JSON] [--delay-ms N]` | Enqueue task; prints task id |
-| `taskq status <task_id>` | Status, failure reason, result |
-| `taskq stats` | pending / delayed / running / dead counts |
-| `taskq worker start [--concurrency N] [--visibility-timeout-ms N]` | Run worker |
-| `taskq failed list` | List dead-letter tasks |
-| `taskq failed retry <task_id>` | Requeue a dead task |
+| `taskq -V, --version` | Print version |
+| `taskq enqueue <name> [--payload JSON] [--delay-ms N] [--redis URI]` | Enqueue task; prints task id |
+| `taskq status <task_id> [--redis URI]` | Status, failure reason, result |
+| `taskq stats [--redis URI]` | pending / delayed / running / dead counts |
+| `taskq worker start [--concurrency N] [--visibility-timeout-ms N] [--redis URI]` | Run worker (default visibility timeout: 30s) |
+| `taskq failed list [--redis URI]` | List dead-letter tasks |
+| `taskq failed retry <task_id> [--redis URI]` | Requeue a dead task |
 
 ## Failure modes
 
@@ -142,19 +152,26 @@ Programmatic enqueue (library): see `examples/producer.cc`.
 | Unknown task name | Immediate fail (dead letter) |
 | Worker crash after reserve | After visibility timeout, task returns to pending (may run again) |
 | Redis unavailable | CLI errors; integration tests skip gracefully |
+| No worker running | Task remains `pending` in queue |
 
 ## Tests
 
 ```bash
 cmake --build build --target check          # full suite (56 tests)
+ctest --test-dir build --output-on-failure  # same as check
+
 ./build/taskqueue_tests '~[integration]'    # unit only, no Redis
 docker compose up -d redis
 ./build/taskqueue_tests '[integration]'     # Redis integration only
 ```
 
+Integration tests use `TASKQUEUE_REDIS_URI` when set (default `tcp://127.0.0.1:6379`). They skip cleanly if Redis is not reachable.
+
 ## Roadmap
 
-Completed through Phase 11 (core queue, CLI, test suite). Optional next steps (Phase 13):
+**MVP is complete** (queue, worker, Redis broker, retries, delays, dead-letter, crash recovery, CLI, tests).
+
+Optional polish:
 
 - Prometheus metrics and structured observability
 - Benchmarks
