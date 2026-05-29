@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 
 #include <spdlog/spdlog.h>
@@ -10,6 +11,7 @@
 #include "taskqueue/retry_policy.h"
 #include "taskqueue/runtime_config.h"
 #include "taskqueue/scheduler.h"
+#include "taskqueue/task_id.h"
 
 namespace tq {
 
@@ -27,6 +29,10 @@ Worker::Worker(Broker& broker, std::size_t concurrency) : broker_(broker) {
   ThrowIfInvalid(ValidateWorkerConcurrency(concurrency));
   ThrowIfInvalid(ValidatePollInterval(poll_interval_));
   ThrowIfInvalid(ValidateVisibilityTimeout(visibility_timeout_));
+  ThrowIfInvalid(ValidatePollInterval(heartbeat_interval_));
+  worker_id_ = TaskId::Generate().Value();
+  hostname_ = ReadHostname();
+  pid_ = static_cast<std::int64_t>(getpid());
   thread_pool_ = std::make_unique<ThreadPool>(concurrency);
 }
 
@@ -44,12 +50,22 @@ void Worker::SetVisibilityTimeout(std::chrono::milliseconds timeout) {
   visibility_timeout_ = timeout;
 }
 
+void Worker::SetHeartbeatInterval(std::chrono::milliseconds interval) {
+  ThrowIfInvalid(ValidatePollInterval(interval));
+  heartbeat_interval_ = interval;
+}
+
 void Worker::Run() {
   running_.store(true);
-  spdlog::info("worker_start poll_interval_ms={} concurrency={}",
-               poll_interval_.count(), thread_pool_->ThreadCount());
+  started_at_ms_ = NowUnixMs();
+  last_heartbeat_at_ = {};
+  spdlog::info("worker_start worker_id={} poll_interval_ms={} concurrency={}",
+               worker_id_, poll_interval_.count(), thread_pool_->ThreadCount());
+  MaybePublishHeartbeat();
 
   while (running_.load()) {
+    MaybePublishHeartbeat();
+
     if (!CanAcceptTask()) {
       std::this_thread::sleep_for(poll_interval_);
       continue;
@@ -101,6 +117,27 @@ bool Worker::RunOnce() {
 
 bool Worker::CanAcceptTask() const {
   return thread_pool_->InFlightCount() < thread_pool_->ThreadCount();
+}
+
+void Worker::MaybePublishHeartbeat() {
+  const auto now = std::chrono::steady_clock::now();
+  if (last_heartbeat_at_ != std::chrono::steady_clock::time_point{} &&
+      now - last_heartbeat_at_ < heartbeat_interval_) {
+    return;
+  }
+  last_heartbeat_at_ = now;
+
+  WorkerHeartbeat heartbeat;
+  heartbeat.worker_id = worker_id_;
+  heartbeat.hostname = hostname_;
+  heartbeat.pid = pid_;
+  heartbeat.started_at_ms = started_at_ms_;
+  heartbeat.last_seen_ms = NowUnixMs();
+  heartbeat.concurrency = thread_pool_->ThreadCount();
+  heartbeat.currently_running = thread_pool_->InFlightCount();
+
+  std::lock_guard<std::mutex> lock(broker_mutex_);
+  broker_.UpsertWorkerHeartbeat(heartbeat, heartbeat_ttl_seconds_);
 }
 
 void Worker::ProcessTask(const TaskMessage& task) {

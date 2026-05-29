@@ -33,6 +33,9 @@ class RedisBroker final : public Broker {
   ParseResult<TaskId> RetryDeadTask(const TaskId& id) override;
   BrokerStats GetStats() const override;
   ParseResult<TaskResult> GetTaskResult(const TaskId& id) const override;
+  void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
+                             std::int64_t ttl_seconds) override;
+  std::vector<WorkerHeartbeat> ListWorkers() const override;
 
   static bool Ping(const std::string& redis_uri);
 

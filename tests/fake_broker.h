@@ -10,6 +10,7 @@
 #include "taskqueue/broker.h"
 #include "taskqueue/broker_stats.h"
 #include "taskqueue/task_result.h"
+#include "taskqueue/worker_heartbeat.h"
 
 namespace tq {
 namespace testing {
@@ -30,6 +31,9 @@ class FakeBroker final : public Broker {
   ParseResult<TaskId> RetryDeadTask(const TaskId& id) override;
   BrokerStats GetStats() const override;
   ParseResult<TaskResult> GetTaskResult(const TaskId& id) const override;
+  void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
+                             std::int64_t ttl_seconds) override;
+  std::vector<WorkerHeartbeat> ListWorkers() const override;
 
   std::size_t PendingCount() const { return pending_.size(); }
   std::size_t DelayedCount() const { return delayed_.size(); }
@@ -51,6 +55,13 @@ class FakeBroker final : public Broker {
   std::unordered_map<std::string, TaskStatus> statuses_;
   std::unordered_map<std::string, std::string> failure_reasons_;
   std::unordered_map<std::string, TaskResult> results_;
+
+  struct StoredWorkerHeartbeat {
+    WorkerHeartbeat heartbeat;
+    std::int64_t expires_at_ms = 0;
+  };
+
+  std::unordered_map<std::string, StoredWorkerHeartbeat> workers_;
 };
 
 }  // namespace testing

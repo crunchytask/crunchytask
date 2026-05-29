@@ -260,4 +260,79 @@ ParseResult<TaskResult> RedisBroker::GetTaskResult(const TaskId& id) const {
   }
 }
 
+void RedisBroker::UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
+                                        const std::int64_t ttl_seconds) {
+  const std::string key = redis_keys::WorkerKey(heartbeat.worker_id);
+  redis_->hset(key, "worker_id", heartbeat.worker_id);
+  redis_->hset(key, "hostname", heartbeat.hostname);
+  redis_->hset(key, "pid", std::to_string(heartbeat.pid));
+  redis_->hset(key, "started_at", std::to_string(heartbeat.started_at_ms));
+  redis_->hset(key, "last_seen", std::to_string(heartbeat.last_seen_ms));
+  redis_->hset(key, "concurrency", std::to_string(heartbeat.concurrency));
+  redis_->hset(key, "currently_running",
+               std::to_string(heartbeat.currently_running));
+  if (ttl_seconds > 0) {
+    redis_->expire(key, ttl_seconds);
+  }
+}
+
+namespace {
+
+std::int64_t ParseInt64Field(const std::unordered_map<std::string, std::string>& fields,
+                             const char* key) {
+  const auto it = fields.find(key);
+  if (it == fields.end()) {
+    return 0;
+  }
+  return std::stoll(it->second);
+}
+
+std::size_t ParseSizeField(const std::unordered_map<std::string, std::string>& fields,
+                           const char* key) {
+  const auto it = fields.find(key);
+  if (it == fields.end()) {
+    return 0;
+  }
+  return static_cast<std::size_t>(std::stoull(it->second));
+}
+
+WorkerHeartbeat WorkerHeartbeatFromHash(
+    const std::unordered_map<std::string, std::string>& fields) {
+  WorkerHeartbeat heartbeat;
+  const auto worker_id = fields.find("worker_id");
+  if (worker_id != fields.end()) {
+    heartbeat.worker_id = worker_id->second;
+  }
+  const auto hostname = fields.find("hostname");
+  if (hostname != fields.end()) {
+    heartbeat.hostname = hostname->second;
+  }
+  heartbeat.pid = ParseInt64Field(fields, "pid");
+  heartbeat.started_at_ms = ParseInt64Field(fields, "started_at");
+  heartbeat.last_seen_ms = ParseInt64Field(fields, "last_seen");
+  heartbeat.concurrency = ParseSizeField(fields, "concurrency");
+  heartbeat.currently_running = ParseSizeField(fields, "currently_running");
+  return heartbeat;
+}
+
+}  // namespace
+
+std::vector<WorkerHeartbeat> RedisBroker::ListWorkers() const {
+  std::vector<std::string> keys;
+  redis_->keys(std::string(redis_keys::kWorkersPrefix) + "*",
+               std::back_inserter(keys));
+
+  std::vector<WorkerHeartbeat> workers;
+  workers.reserve(keys.size());
+  for (const auto& key : keys) {
+    std::unordered_map<std::string, std::string> fields;
+    redis_->hgetall(key, std::inserter(fields, fields.end()));
+    if (fields.empty()) {
+      continue;
+    }
+    workers.push_back(WorkerHeartbeatFromHash(fields));
+  }
+  return workers;
+}
+
 }  // namespace tq

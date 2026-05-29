@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 #include "taskqueue/task_status.h"
 #include "taskqueue/version.h"
 #include "taskqueue/worker.h"
+#include "taskqueue/worker_heartbeat.h"
 
 #ifdef TASKQUEUE_HAS_REDIS
 #include "taskqueue/redis_broker.h"
@@ -95,6 +97,31 @@ void PrintStats(const tq::BrokerStats& stats) {
   std::cout << "delayed: " << stats.delayed_count << '\n';
   std::cout << "running: " << stats.running_count << '\n';
   std::cout << "dead: " << stats.dead_count << '\n';
+}
+
+void PrintWorkers(const std::vector<tq::WorkerHeartbeat>& workers) {
+  if (workers.empty()) {
+    std::cout << "No active workers\n";
+    return;
+  }
+
+  std::vector<tq::WorkerHeartbeat> sorted = workers;
+  std::sort(sorted.begin(), sorted.end(),
+            [](const tq::WorkerHeartbeat& left,
+               const tq::WorkerHeartbeat& right) {
+              if (left.hostname != right.hostname) {
+                return left.hostname < right.hostname;
+              }
+              return left.worker_id < right.worker_id;
+            });
+
+  std::cout << "worker_id\thostname\tpid\tconcurrency\trunning\tstarted_at\tlast_seen\n";
+  for (const tq::WorkerHeartbeat& worker : sorted) {
+    std::cout << worker.worker_id << '\t' << worker.hostname << '\t'
+              << worker.pid << '\t' << worker.concurrency << '\t'
+              << worker.currently_running << '\t' << worker.started_at_ms << '\t'
+              << worker.last_seen_ms << '\n';
+  }
 }
 #endif
 
@@ -251,6 +278,20 @@ int main(int argc, char** argv) {
       std::cout << "requeued task " << retried.Value().Value() << " status="
                 << tq::TaskStatusToString(status.Value()) << '\n';
     }
+  });
+
+  auto* workers_cmd = app.add_subcommand("workers", "Worker discovery commands");
+  auto* workers_list_cmd =
+      workers_cmd->add_subcommand("list", "List active workers");
+  workers_list_cmd->add_option("--redis", redis_uri, "Redis connection URI");
+  workers_list_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
+    if (!EnsureRedis(redis_uri)) {
+      std::exit(1);
+    }
+
+    tq::RedisBroker broker(redis_uri);
+    PrintWorkers(broker.ListWorkers());
   });
 #else
   app.add_subcommand("enqueue", "Enqueue tasks (Redis support disabled)")

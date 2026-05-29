@@ -11,6 +11,7 @@
 #include "taskqueue/task_message.h"
 #include "taskqueue/task_result.h"
 #include "taskqueue/task_status.h"
+#include "taskqueue/worker_heartbeat.h"
 
 namespace tq {
 
@@ -32,6 +33,9 @@ class Broker {
   virtual ParseResult<TaskId> RetryDeadTask(const TaskId& id) = 0;
   virtual BrokerStats GetStats() const = 0;
   virtual ParseResult<TaskResult> GetTaskResult(const TaskId& id) const = 0;
+  virtual void UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
+                                     std::int64_t ttl_seconds) = 0;
+  virtual std::vector<WorkerHeartbeat> ListWorkers() const = 0;
 };
 
 }  // namespace tq

@@ -205,5 +205,28 @@ ParseResult<TaskResult> FakeBroker::GetTaskResult(const TaskId& id) const {
   return ParseResult<TaskResult>::Ok(result->second);
 }
 
+void FakeBroker::UpsertWorkerHeartbeat(const WorkerHeartbeat& heartbeat,
+                                       const std::int64_t ttl_seconds) {
+  StoredWorkerHeartbeat stored;
+  stored.heartbeat = heartbeat;
+  if (ttl_seconds > 0) {
+    stored.expires_at_ms = NowUnixMs() + ttl_seconds * 1000;
+  }
+  workers_[heartbeat.worker_id] = std::move(stored);
+}
+
+std::vector<WorkerHeartbeat> FakeBroker::ListWorkers() const {
+  const std::int64_t now_ms = NowUnixMs();
+  std::vector<WorkerHeartbeat> workers;
+  workers.reserve(workers_.size());
+  for (const auto& entry : workers_) {
+    if (entry.second.expires_at_ms > 0 && now_ms > entry.second.expires_at_ms) {
+      continue;
+    }
+    workers.push_back(entry.second.heartbeat);
+  }
+  return workers;
+}
+
 }  // namespace testing
 }  // namespace tq

@@ -11,6 +11,11 @@ inline constexpr const char kStatus[] = "taskq:status";
 inline constexpr const char kResults[] = "taskq:results";
 inline constexpr const char kDead[] = "taskq:dead";
 inline constexpr const char kFailures[] = "taskq:failures";
+inline constexpr const char kWorkersPrefix[] = "taskq:workers:";
+
+inline std::string WorkerKey(const std::string& worker_id) {
+  return std::string(kWorkersPrefix) + worker_id;
+}
 
 }  // namespace redis_keys
 }  // namespace tq

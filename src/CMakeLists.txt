@@ -8,6 +8,7 @@ add_library(
   task_registry.cc
   retry_policy.cc
   runtime_config.cc
+  worker_heartbeat.cc
   clock.cc
   scheduler.cc
   thread_pool.cc
