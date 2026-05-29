@@ -42,12 +42,16 @@ taskqueue_apply_warnings(taskqueue)
 target_link_libraries(
   taskqueue
   PUBLIC
-    nlohmann_json::nlohmann_json
-    spdlog::spdlog
+    $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+    $<BUILD_INTERFACE:spdlog::spdlog>
 )
 
 if(TASKQUEUE_ENABLE_REDIS)
-  target_link_libraries(taskqueue PUBLIC redis++::redis++_static)
+  target_link_libraries(
+    taskqueue
+    PUBLIC
+      $<BUILD_INTERFACE:redis++::redis++_static>
+  )
   target_compile_definitions(taskqueue PUBLIC TASKQUEUE_HAS_REDIS=1)
 endif()
 
@@ -58,3 +62,14 @@ target_compile_definitions(
     TASKQUEUE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
     TASKQUEUE_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
+
+if(TASKQUEUE_ENABLE_INSTALL)
+  install(
+    TARGETS taskqueue
+    EXPORT taskqueueTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT taskqueue
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT taskqueue
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT taskqueue
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" COMPONENT taskqueue
+  )
+endif()

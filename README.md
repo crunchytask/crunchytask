@@ -60,7 +60,9 @@ flowchart LR
 
 Redis also stores `taskq:results` (success payloads) and `taskq:failures` (latest failure reason per task id).
 
-## Quick start
+## Build and install
+
+### Build from source
 
 **Prerequisites:** CMake 3.24+, C++20 compiler, Docker (for Redis).
 
@@ -68,15 +70,87 @@ Redis also stores `taskq:results` (success payloads) and `taskq:failures` (lates
 git clone <repo>
 cd crunchytask
 
-docker compose up -d redis
-
 cmake -S . -B build
 cmake --build build
 ```
 
-**Build outputs:** `build/taskq` (CLI), `build/producer` (enqueue example), `build/taskqueue_tests`.
+Build outputs in `build/`:
+
+- `taskq` — CLI
+- `libtaskqueue.a` — library
+- `producer` — enqueue example (if examples enabled)
+- `taskqueue_tests` — test runner (if tests enabled)
 
 Default Redis URI: `tcp://127.0.0.1:6379` (override with `TASKQUEUE_REDIS_URI`).
+
+### Install locally
+
+Install the library, public headers, and CLI (enabled by default via `TASKQUEUE_ENABLE_INSTALL`):
+
+```bash
+cmake --build build
+cmake --install build --prefix ~/.local --component taskqueue
+```
+
+Use `--component taskqueue` so only CrunchyTask artifacts are installed (not FetchContent dependencies such as hiredis/redis++).
+
+Typical layout (on many 64-bit Linux systems libraries land in `lib64/`):
+
+```text
+~/.local/bin/taskq
+~/.local/lib64/libtaskqueue.a
+~/.local/include/taskqueue/*.h
+~/.local/lib64/cmake/taskqueue/taskqueue-config.cmake
+```
+
+Use a custom prefix, for example `/usr/local`:
+
+```bash
+sudo cmake --install build --prefix /usr/local --component taskqueue
+```
+
+### Run the CLI after install
+
+Ensure the install prefix is on your `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+taskq --version
+taskq worker start
+```
+
+### Use the library from another CMake project
+
+```cmake
+find_package(taskqueue CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE taskqueue::taskqueue)
+```
+
+When Redis support was enabled at build time, consumers also need `nlohmann_json`, `spdlog`, and `redis++` available to CMake (`find_dependency` runs automatically).
+
+### Uninstall and clean builds
+
+CMake does not provide a built-in uninstall target. To remove an install tree:
+
+```bash
+xargs rm -vf < build/install_manifest.txt
+```
+
+To wipe a local build directory and reconfigure from scratch:
+
+```bash
+rm -rf build
+cmake -S . -B build
+cmake --build build
+```
+
+Disable install rules when packaging differently:
+
+```bash
+cmake -S . -B build -DTASKQUEUE_ENABLE_INSTALL=OFF
+```
+
+## Quick start
 
 ### Demo (two terminals)
 

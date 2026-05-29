@@ -1,0 +1,25 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(nlohmann_json 3.11)
+find_dependency(spdlog 1.8)
+
+if(@TASKQUEUE_ENABLE_REDIS@)
+  find_dependency(redis++ 1.3)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/taskqueueTargets.cmake")
+
+set(_taskqueue_link_libs nlohmann_json::nlohmann_json spdlog::spdlog)
+if(@TASKQUEUE_ENABLE_REDIS@)
+  list(APPEND _taskqueue_link_libs redis++::redis++_static)
+endif()
+
+set_target_properties(
+  taskqueue::taskqueue
+  PROPERTIES
+    INTERFACE_LINK_LIBRARIES "${_taskqueue_link_libs}"
+)
+
+check_required_components(taskqueue)

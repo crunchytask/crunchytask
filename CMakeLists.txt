@@ -27,6 +27,7 @@ option(TASKQUEUE_BUILD_CLI "Build the taskq CLI" ON)
 option(TASKQUEUE_BUILD_EXAMPLES "Build example programs" ON)
 option(TASKQUEUE_BUILD_TESTS "Build unit and integration tests" ON)
 option(TASKQUEUE_BUILD_BENCHMARKS "Build operational benchmark executable" OFF)
+option(TASKQUEUE_ENABLE_INSTALL "Generate CMake install and package export rules" ON)
 option(TASKQUEUE_ENABLE_REDIS "Enable Redis broker dependencies" ON)
 option(TASKQUEUE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
@@ -179,4 +180,8 @@ if(TASKQUEUE_BUILD_TESTS)
     USES_TERMINAL
     COMMENT "Run all tests (integration tests skip if Redis is unavailable)"
   )
+endif()
+
+if(TASKQUEUE_ENABLE_INSTALL)
+  include("${CMAKE_SOURCE_DIR}/cmake/InstallRules.cmake")
 endif()
