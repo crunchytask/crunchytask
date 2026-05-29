@@ -143,8 +143,6 @@ Programmatic enqueue (library): see `examples/producer.cc`.
 | Worker crash after reserve | After visibility timeout, task returns to pending (may run again) |
 | Redis unavailable | CLI errors; integration tests skip gracefully |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for flows and Redis keys.
-
 ## Tests
 
 ```bash
@@ -163,11 +161,3 @@ Completed through Phase 11 (core queue, CLI, test suite). Optional next steps (P
 - RabbitMQ or Protobuf wire format
 - Priority queues and routing
 - Worker heartbeat
-
-See [docs/TASKS.md](docs/TASKS.md) for the full backlog.
-
-## Further reading
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — modules, data flows, Redis layout
-- [docs/DECISIONS.md](docs/DECISIONS.md) — scope and tradeoffs
-- [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) — current status and verified commands
