@@ -166,4 +166,12 @@ endif()
 
 if(TASKQUEUE_BUILD_TESTS)
   add_subdirectory(tests)
+
+  add_custom_target(
+    check
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure
+    DEPENDS taskqueue_tests
+    USES_TERMINAL
+    COMMENT "Run all tests (integration tests skip if Redis is unavailable)"
+  )
 endif()

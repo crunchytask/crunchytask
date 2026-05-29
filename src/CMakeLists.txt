@@ -1,7 +1,27 @@
 add_library(
   taskqueue
+  task_id.cc
+  task_json.cc
+  task_message.cc
+  task_result.cc
+  task_status.cc
+  task_registry.cc
+  retry_policy.cc
+  clock.cc
+  scheduler.cc
+  thread_pool.cc
+  worker.cc
   version.cc
 )
+
+if(TASKQUEUE_ENABLE_REDIS)
+  target_sources(taskqueue PRIVATE redis_broker.cc)
+  target_compile_options(
+    taskqueue
+    PUBLIC
+      "$<$<COMPILE_LANGUAGE:CXX>:-I${CMAKE_BINARY_DIR}/hiredis-include>"
+  )
+endif()
 
 add_library(taskqueue::taskqueue ALIAS taskqueue)
 
