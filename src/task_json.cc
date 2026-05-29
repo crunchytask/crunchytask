@@ -66,6 +66,34 @@ ParseResult<std::string> ParseStringField(const nlohmann::json& json,
   return ParseResult<std::string>::Ok(json.at(key).get<std::string>());
 }
 
+// Missing schema_version is treated as legacy v1: tasks enqueued before the
+// versioned wire format did not include this field. Rejecting missing versions
+// would break in-flight Redis payloads after upgrade. New serialization always
+// writes schema_version explicitly.
+ParseResult<int> ParseTaskSchemaVersion(const nlohmann::json& json) {
+  if (!json.contains("schema_version")) {
+    return ParseResult<int>::Ok(kTaskSchemaVersion);
+  }
+
+  const auto& version_json = json.at("schema_version");
+  if (!version_json.is_number_integer()) {
+    return ParseResult<int>::Fail("schema_version must be an integer");
+  }
+
+  const int version = version_json.get<int>();
+  if (version > kTaskSchemaVersion) {
+    return ParseResult<int>::Fail(
+        "unsupported task schema_version: " + std::to_string(version) +
+        " (max supported: " + std::to_string(kTaskSchemaVersion) + ")");
+  }
+  if (version < kTaskSchemaVersion) {
+    return ParseResult<int>::Fail("unsupported task schema_version: " +
+                                  std::to_string(version));
+  }
+
+  return ParseResult<int>::Ok(version);
+}
+
 }  // namespace
 
 nlohmann::json ToJson(const RetryPolicy& policy) {
@@ -148,6 +176,7 @@ ParseResult<TaskResult> TaskResultFromJson(const nlohmann::json& json) {
 
 nlohmann::json ToJson(const TaskMessage& message) {
   nlohmann::json json{
+      {"schema_version", kTaskSchemaVersion},
       {"id", message.id.Value()},
       {"name", message.name},
       {"payload", message.payload},
@@ -175,6 +204,11 @@ nlohmann::json ToJson(const TaskMessage& message) {
 ParseResult<TaskMessage> TaskMessageFromJson(const nlohmann::json& json) {
   if (!json.is_object()) {
     return ParseResult<TaskMessage>::Fail("task message must be an object");
+  }
+
+  const auto schema_version_check = ParseTaskSchemaVersion(json);
+  if (!schema_version_check.Ok()) {
+    return ParseResult<TaskMessage>::Fail(schema_version_check.Error());
   }
 
   TaskMessage message;

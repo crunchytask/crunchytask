@@ -25,6 +25,13 @@ tq::TaskMessage MakeSampleMessage() {
 
 }  // namespace
 
+TEST_CASE("TaskMessage serialization includes schema_version", "[task_json]") {
+  const nlohmann::json json = tq::ToJson(MakeSampleMessage());
+
+  REQUIRE(json.contains("schema_version"));
+  REQUIRE(json.at("schema_version").get<int>() == tq::kTaskSchemaVersion);
+}
+
 TEST_CASE("TaskMessage round-trips through JSON", "[task_json]") {
   const tq::TaskMessage original = MakeSampleMessage();
 
@@ -33,6 +40,35 @@ TEST_CASE("TaskMessage round-trips through JSON", "[task_json]") {
 
   REQUIRE(parsed.Ok());
   REQUIRE(parsed.Value() == original);
+}
+
+TEST_CASE("TaskMessageFromJson accepts explicit schema_version 1", "[task_json]") {
+  nlohmann::json json = tq::ToJson(MakeSampleMessage());
+  json["schema_version"] = 1;
+
+  const auto parsed = tq::TaskMessageFromJson(json);
+  REQUIRE(parsed.Ok());
+}
+
+TEST_CASE("TaskMessageFromJson treats missing schema_version as legacy v1",
+          "[task_json]") {
+  nlohmann::json json = tq::ToJson(MakeSampleMessage());
+  json.erase("schema_version");
+
+  const auto parsed = tq::TaskMessageFromJson(json);
+  REQUIRE(parsed.Ok());
+  REQUIRE(parsed.Value() == MakeSampleMessage());
+}
+
+TEST_CASE("TaskMessageFromJson rejects unsupported future schema_version",
+          "[task_json]") {
+  nlohmann::json json = tq::ToJson(MakeSampleMessage());
+  json["schema_version"] = 2;
+
+  const auto parsed = tq::TaskMessageFromJson(json);
+  REQUIRE_FALSE(parsed.Ok());
+  REQUIRE(parsed.Error() ==
+          "unsupported task schema_version: 2 (max supported: 1)");
 }
 
 TEST_CASE("TaskMessage Create assigns a non-empty id", "[unit][task_message]") {

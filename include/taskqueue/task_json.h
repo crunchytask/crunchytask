@@ -11,6 +11,9 @@
 
 namespace tq {
 
+// Current on-the-wire task message format. Bump when making breaking JSON changes.
+inline constexpr int kTaskSchemaVersion = 1;
+
 nlohmann::json ToJson(const TaskMessage& message);
 ParseResult<TaskMessage> TaskMessageFromJson(const nlohmann::json& json);
 ParseResult<TaskMessage> TaskMessageFromJsonString(const std::string& json_text);
