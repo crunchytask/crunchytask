@@ -1,3 +1,4 @@
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
+#include "taskqueue/runtime_config.h"
 #include "taskqueue/task_message.h"
 #include "taskqueue/task_result.h"
 #include "taskqueue/task_status.h"
@@ -28,12 +30,12 @@ void HandleStopSignal(int /*signal*/) {
   }
 }
 
-std::string RedisUri() {
-  const char* uri = std::getenv("TASKQUEUE_REDIS_URI");
-  if (uri != nullptr && uri[0] != '\0') {
-    return uri;
+void ExitWithError(const std::string& message);
+
+void ValidateOrExit(const tq::ConfigValidation& validation) {
+  if (!validation.Ok()) {
+    ExitWithError(validation.Error());
   }
-  return "tcp://127.0.0.1:6379";
 }
 
 bool EnsureRedis(const std::string& redis_uri) {
@@ -103,7 +105,7 @@ int main(int argc, char** argv) {
   app.set_version_flag("-V,--version", std::string(tq::kVersionString));
 
 #ifdef TASKQUEUE_HAS_REDIS
-  std::string redis_uri = RedisUri();
+  std::string redis_uri = tq::DefaultRedisUriFromEnv();
 
   auto* enqueue_cmd = app.add_subcommand("enqueue", "Enqueue a task");
   std::string task_name;
@@ -115,6 +117,8 @@ int main(int argc, char** argv) {
                           "Delay task execution by this many milliseconds");
   enqueue_cmd->add_option("--redis", redis_uri, "Redis connection URI");
   enqueue_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
+    ValidateOrExit(tq::ValidateDelayMs(delay_ms));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }
@@ -134,6 +138,7 @@ int main(int argc, char** argv) {
   status_cmd->add_option("task_id", status_task_id, "Task id")->required();
   status_cmd->add_option("--redis", redis_uri, "Redis connection URI");
   status_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }
@@ -150,6 +155,7 @@ int main(int argc, char** argv) {
   auto* stats_cmd = app.add_subcommand("stats", "Show queue statistics");
   stats_cmd->add_option("--redis", redis_uri, "Redis connection URI");
   stats_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }
@@ -170,6 +176,10 @@ int main(int argc, char** argv) {
                         "Requeue running tasks after this timeout (ms)");
 
   start_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
+    ValidateOrExit(tq::ValidateWorkerConcurrency(concurrency));
+    ValidateOrExit(tq::ValidateVisibilityTimeout(
+        std::chrono::milliseconds(visibility_timeout_ms)));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }
@@ -193,6 +203,7 @@ int main(int argc, char** argv) {
   list_cmd->add_option("--redis", redis_uri, "Redis connection URI");
 
   list_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }
@@ -219,6 +230,7 @@ int main(int argc, char** argv) {
   retry_cmd->add_option("--redis", redis_uri, "Redis connection URI");
 
   retry_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
     if (!EnsureRedis(redis_uri)) {
       std::exit(1);
     }

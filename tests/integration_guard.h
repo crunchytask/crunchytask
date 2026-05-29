@@ -7,17 +7,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "taskqueue/redis_broker.h"
+#include "taskqueue/runtime_config.h"
 
 namespace tq {
 namespace testing {
 
-inline std::string RedisUri() {
-  const char* uri = std::getenv("TASKQUEUE_REDIS_URI");
-  if (uri != nullptr && uri[0] != '\0') {
-    return uri;
-  }
-  return "tcp://127.0.0.1:6379";
-}
+inline std::string RedisUri() { return DefaultRedisUriFromEnv(); }
 
 inline bool SkipIfNoRedis(const std::string& redis_uri = RedisUri()) {
   if (tq::RedisBroker::Ping(redis_uri)) {

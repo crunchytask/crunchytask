@@ -2,6 +2,7 @@
 #include <iostream>
 #include <string>
 
+#include "taskqueue/runtime_config.h"
 #include "taskqueue/task_message.h"
 #include "taskqueue/version.h"
 
@@ -11,14 +12,6 @@
 
 namespace {
 
-std::string RedisUri() {
-  const char* uri = std::getenv("TASKQUEUE_REDIS_URI");
-  if (uri != nullptr && uri[0] != '\0') {
-    return uri;
-  }
-  return "tcp://127.0.0.1:6379";
-}
-
 }  // namespace
 
 int main() {
@@ -26,13 +19,14 @@ int main() {
   std::cout << "version: " << tq::kVersionString << '\n';
 
 #ifdef TASKQUEUE_HAS_REDIS
-  if (!tq::RedisBroker::Ping(RedisUri())) {
-    std::cerr << "Redis not available at " << RedisUri() << '\n';
+  const std::string redis_uri = tq::DefaultRedisUriFromEnv();
+  if (!tq::RedisBroker::Ping(redis_uri)) {
+    std::cerr << "Redis not available at " << redis_uri << '\n';
     std::cerr << "Start Redis with: docker compose up -d redis\n";
     return 1;
   }
 
-  tq::RedisBroker broker(RedisUri());
+  tq::RedisBroker broker(redis_uri);
   const tq::TaskMessage immediate =
       tq::TaskMessage::Create("add", nlohmann::json{{"a", 2}, {"b", 3}});
   const tq::TaskId immediate_id = broker.Enqueue(immediate);

@@ -8,6 +8,7 @@ add_executable(taskqueue_tests
   redis_broker_integration_test.cc
   task_json_test.cc
   retry_policy_test.cc
+  runtime_config_test.cc
   scheduler_test.cc
   failure_modes_test.cc
   thread_pool_test.cc

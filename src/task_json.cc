@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "taskqueue/runtime_config.h"
+
 namespace tq {
 
 namespace {
@@ -96,6 +98,11 @@ ParseResult<RetryPolicy> RetryPolicyFromJson(const nlohmann::json& json) {
     return ParseResult<RetryPolicy>::Fail(multiplier.Error());
   }
   policy.multiplier = multiplier.Value();
+
+  const auto validation = ValidateRetryPolicy(policy);
+  if (!validation.Ok()) {
+    return ParseResult<RetryPolicy>::Fail(validation.Error());
+  }
 
   return ParseResult<RetryPolicy>::Ok(policy);
 }

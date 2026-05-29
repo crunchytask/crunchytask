@@ -1,6 +1,9 @@
 #include "taskqueue/task_message.h"
 
 #include <chrono>
+#include <stdexcept>
+
+#include "taskqueue/runtime_config.h"
 
 namespace tq {
 
@@ -21,6 +24,11 @@ TaskMessage TaskMessage::Create(std::string name, nlohmann::json payload) {
 
 TaskMessage TaskMessage::CreateWithDelay(std::string name, nlohmann::json payload,
                                          std::int64_t delay_ms) {
+  const auto validation = ValidateDelayMs(delay_ms);
+  if (!validation.Ok()) {
+    throw std::invalid_argument(validation.Error());
+  }
+
   TaskMessage message = Create(std::move(name), std::move(payload));
   message.run_at_ms = message.created_at_ms + delay_ms;
   return message;

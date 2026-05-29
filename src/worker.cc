@@ -1,5 +1,6 @@
 #include "taskqueue/worker.h"
 
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -7,22 +8,39 @@
 
 #include "taskqueue/clock.h"
 #include "taskqueue/retry_policy.h"
+#include "taskqueue/runtime_config.h"
 #include "taskqueue/scheduler.h"
 
 namespace tq {
 
-Worker::Worker(Broker& broker, std::size_t concurrency)
-    : broker_(broker), thread_pool_(std::make_unique<ThreadPool>(concurrency)) {}
+namespace {
+
+void ThrowIfInvalid(const ConfigValidation& validation) {
+  if (!validation.Ok()) {
+    throw std::invalid_argument(validation.Error());
+  }
+}
+
+}  // namespace
+
+Worker::Worker(Broker& broker, std::size_t concurrency) : broker_(broker) {
+  ThrowIfInvalid(ValidateWorkerConcurrency(concurrency));
+  ThrowIfInvalid(ValidatePollInterval(poll_interval_));
+  ThrowIfInvalid(ValidateVisibilityTimeout(visibility_timeout_));
+  thread_pool_ = std::make_unique<ThreadPool>(concurrency);
+}
 
 void Worker::RegisterTask(std::string name, TaskHandler handler) {
   registry_.RegisterTask(std::move(name), std::move(handler));
 }
 
 void Worker::SetPollInterval(std::chrono::milliseconds interval) {
+  ThrowIfInvalid(ValidatePollInterval(interval));
   poll_interval_ = interval;
 }
 
 void Worker::SetVisibilityTimeout(std::chrono::milliseconds timeout) {
+  ThrowIfInvalid(ValidateVisibilityTimeout(timeout));
   visibility_timeout_ = timeout;
 }
 

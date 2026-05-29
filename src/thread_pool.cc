@@ -19,8 +19,7 @@ struct ThreadPool::State {
 };
 
 ThreadPool::ThreadPool(std::size_t thread_count)
-    : thread_count_(thread_count == 0 ? 1 : thread_count),
-      state_(std::make_unique<State>()) {
+    : thread_count_(thread_count), state_(std::make_unique<State>()) {
   state_->threads.reserve(thread_count_);
   for (std::size_t i = 0; i < thread_count_; ++i) {
     state_->threads.emplace_back([this]() { WorkerLoop(); });
