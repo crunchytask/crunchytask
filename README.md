@@ -143,21 +143,33 @@ Programmatic enqueue (library): see `examples/producer.cc`.
 | `taskq failed list [--redis URI]` | List dead-letter tasks |
 | `taskq failed retry <task_id> [--redis URI]` | Requeue a dead task |
 
-## Failure modes
+## Failure mode matrix
+
+At-least-once delivery applies to several rows below: recovery may cause a task to run more than once. Handlers should be idempotent.
+
+| Failure | Expected behavior | Recovery | Operational caveat |
+|---------|-------------------|----------|-------------------|
+| **Redis is down** | CLI and workers cannot enqueue, reserve, or update state; commands exit with an error. | Restore Redis, then retry the command or restart workers. | No queue durability while Redis is unavailable; unacked in-flight work depends on Redis persistence settings. |
+| **Worker crashes after reserving a task** | Task stays in `running` with a `reserved_at` timestamp. | Scheduler reclaims the task after the visibility timeout (default 30s) and returns it to `pending` for another worker. | The handler may have partially run; duplicate execution is possible after reclaim. |
+| **Handler returns failure** | Worker records a failure and calls `Retry` or `Fail` based on `max_retries`. | Retries go to the delayed queue with exponential backoff; exhausted retries move to the dead-letter queue. | Each failure increments retry metrics; permanent errors should fail fast or use `max_retries: 0`. |
+| **Handler throws (uncaught exception)** | The worker thread aborts that task; no ack, retry, or fail is recorded. | Task remains `running` until visibility timeout reclaim, then follows the crash-after-reserve path. | Validate payloads in the handler and return `TaskResult::Failure`; do not rely on exceptions for control flow. |
+| **Task exceeds visibility timeout** | Stale `running` task is treated as abandoned. | `ReclaimStaleTasks` moves it back to `pending` on the next scheduler tick. | Same duplicate-execution risk as a worker crash; tune `--visibility-timeout-ms` to your worst-case handler runtime. |
+| **Producer enqueues malformed payload** | CLI rejects invalid JSON before enqueue (`invalid JSON payload`). Valid JSON with wrong fields may still enqueue. | Fix the payload and enqueue again; inspect bad tasks with `taskq status` / `taskq failed list`. | The CLI validates JSON syntax only, not task-specific schema; handlers must validate business fields. |
+| **Retry attempts exhausted** | Task moves to the dead-letter queue; status becomes `dead`. | Inspect with `taskq failed list`; requeue manually via `taskq failed retry <task_id>`. | Dead-letter retry resets retry count but does not fix a permanently broken handler or payload. |
+| **Delayed task is due, no worker running** | Task stays in the delayed queue until promoted. | Start a worker; scheduler tick promotes due tasks to `pending`, then they are reserved normally. | Due tasks do not run without a worker; monitor `stats` (`delayed` count) and worker heartbeats (`taskq workers list`). |
+
+Legacy quick reference:
 
 | Scenario | System behavior |
 |----------|-----------------|
-| Handler returns error | Retry with exponential backoff until `max_retries` |
-| Retries exhausted | Task moves to dead-letter queue (`taskq failed list`) |
-| Unknown task name | Immediate fail (dead letter) |
-| Worker crash after reserve | After visibility timeout, task returns to pending (may run again) |
-| Redis unavailable | CLI errors; integration tests skip gracefully |
-| No worker running | Task remains `pending` in queue |
+| Unknown task name | Immediate dead-letter (`taskq failed list`) |
+| No worker running (immediate enqueue) | Task remains `pending` |
+| Redis unavailable in tests | Integration tests skip gracefully |
 
 ## Tests
 
 ```bash
-cmake --build build --target check          # full suite (56 tests)
+cmake --build build --target check          # full suite (88 tests)
 ctest --test-dir build --output-on-failure  # same as check
 
 ./build/taskqueue_tests '~[integration]'    # unit only, no Redis
