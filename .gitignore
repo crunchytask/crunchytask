@@ -28,6 +28,7 @@ dist/
 
 # IDE and OS metadata
 .vscode/
+.cursor/
 .idea/
 .DS_Store
 Thumbs.db
