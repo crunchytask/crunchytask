@@ -1,6 +1,9 @@
+#define FMT_CONSTEVAL
+
 #include "taskqueue/worker.h"
 
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -61,7 +64,8 @@ void Worker::Run() {
   started_at_ms_ = NowUnixMs();
   last_heartbeat_at_ = {};
   spdlog::info("worker_start worker_id={} poll_interval_ms={} concurrency={}",
-               worker_id_, poll_interval_.count(), thread_pool_->ThreadCount());
+               std::string_view{worker_id_}, poll_interval_.count(),
+               thread_pool_->ThreadCount());
   MaybePublishHeartbeat();
 
   while (running_.load()) {
@@ -142,14 +146,14 @@ void Worker::MaybePublishHeartbeat() {
 }
 
 void Worker::ProcessTask(const TaskMessage& task) {
-  spdlog::info("task_start task_id={} task_name={}", task.id.Value(),
-               task.name);
+  spdlog::info("task_start task_id={} task_name={}",
+               std::string_view{task.id.Value()}, std::string_view{task.name});
 
   const auto started_at = std::chrono::steady_clock::now();
 
   if (!registry_.HasTask(task.name)) {
-    spdlog::error("task_unknown task_id={} task_name={}", task.id.Value(),
-                  task.name);
+    spdlog::error("task_unknown task_id={} task_name={}",
+                  std::string_view{task.id.Value()}, std::string_view{task.name});
     std::lock_guard<std::mutex> lock(broker_mutex_);
     broker_.Fail(task.id, "unknown task: " + task.name);
     return;
@@ -165,19 +169,21 @@ void Worker::ProcessTask(const TaskMessage& task) {
 
   if (result.success) {
     spdlog::info("task_complete task_id={} task_name={} success=true",
-                 task.id.Value(), task.name);
+                 std::string_view{task.id.Value()}, std::string_view{task.name});
     broker_.Ack(task.id);
     return;
   }
 
   spdlog::warn("task_complete task_id={} task_name={} success=false error={}",
-               task.id.Value(), task.name, result.error_message);
+               std::string_view{task.id.Value()}, std::string_view{task.name},
+               std::string_view{result.error_message});
 
   broker_.RecordCounter(metrics_names::kTasksFailedTotal);
 
   if (ShouldRetry(task)) {
     spdlog::info("task_retry task_id={} task_name={} retry_count={}",
-                 task.id.Value(), task.name, task.retry_count + 1);
+                 std::string_view{task.id.Value()}, std::string_view{task.name},
+                 task.retry_count + 1);
     broker_.Retry(task, result.error_message);
     return;
   }
