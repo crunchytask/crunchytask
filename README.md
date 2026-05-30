@@ -1,24 +1,26 @@
 # CrunchyTask
 
-C++20 distributed task queue **inspired by Celery**, built as a systems/portfolio project. Producers enqueue JSON tasks to Redis; worker processes reserve, execute registered handlers on a thread pool, and acknowledge results—with retries, delays, dead-letter handling, and crash recovery.
+A small C++20 task queue backed by Redis. You enqueue JSON jobs from the CLI or your own code; worker processes pull work, run registered handlers on a thread pool, and write results back. Retries, delays, dead-lettering, and basic crash recovery are in there too.
 
-**Delivery guarantee: at-least-once.** A task may run more than once after a worker crash, visibility timeout, or retry. Handlers must be idempotent.
+**Delivery is at-least-once** — if a worker dies mid-task or a visibility timeout fires, the same job might run again. Write handlers so that is OK.
 
-## Why this is not a Celery clone
+I built this as a systems/portfolio project to get my hands dirty with concurrency, a real broker, and the boring failure cases (retries, stale leases, DLQ) rather than only happy-path demos.
 
-Celery is a large Python ecosystem (routing, chords, groups, beat scheduler, result backends, monitoring, multiple brokers). CrunchyTask deliberately implements a **narrow slice**:
+## What it does
 
-| In scope (MVP) | Out of scope |
-|----------------|--------------|
-| Enqueue / reserve / execute / ack | Celery protocol compatibility |
-| Redis broker | RabbitMQ / Kafka backends |
-| Retries + exponential backoff | Task chains, groups, chords |
-| Delayed tasks | Distributed cron / beat |
-| Dead-letter queue + CLI inspection | Web dashboard |
-| Visibility timeout / crash recovery | Exactly-once execution |
-| `taskq` CLI | Full Celery feature parity |
+- Enqueue named tasks with a JSON payload (`taskq enqueue`)
+- Workers reserve work from Redis and execute on a thread pool
+- Retries with exponential backoff; optional delay before first run
+- Dead-letter queue when retries are exhausted (`taskq failed list` / `retry`)
+- Per-task retry policy on enqueue (`--retry-policy` JSON)
+- Visibility timeout so crashed workers do not strand tasks forever
+- Worker heartbeats in Redis (`taskq workers list`)
+- Basic metrics (`taskq metrics`, Prometheus or plain text)
+- `taskq` CLI for enqueue, status, results, stats, workers, and running a worker
 
-The goal is to demonstrate **C++ concurrency, broker design, and failure handling**—not to replace Celery in production Python apps.
+Not trying to be a full job platform: no web UI, no distributed cron, no exactly-once guarantees, no RabbitMQ/Kafka backends (Redis only for now). Good enough to learn from and to wire into a C++ service.
+
+There is also a thin Python producer client under [`clients/python/`](clients/python/README.md) (wraps the `taskq` binary; no Python worker).
 
 ## Architecture
 
@@ -56,15 +58,13 @@ flowchart LR
   Reg -->|max retries| X
 ```
 
-**Scheduler tick** (each worker poll): promote due delayed tasks → reclaim stale running tasks → reserve from pending.
+Each worker poll: promote due delayed tasks → reclaim stale running tasks → reserve from pending.
 
-Redis also stores `taskq:results` (success payloads) and `taskq:failures` (latest failure reason per task id).
+Redis also holds `taskq:results` (success payloads), `taskq:failures` (latest error per task id), `taskq:workers:<id>` (worker heartbeats), and `taskq:metrics` (counters/histograms).
 
 ## Build and install
 
-### Build from source
-
-**Prerequisites:** CMake 3.24+, C++20 compiler, Docker (for Redis).
+**You need:** CMake 3.24+, a C++20 compiler, Docker if you want the bundled Redis compose file.
 
 ```bash
 git clone <repo>
@@ -74,27 +74,25 @@ cmake -S . -B build
 cmake --build build
 ```
 
-Build outputs in `build/`:
+Outputs in `build/`:
 
 - `taskq` — CLI
 - `libtaskqueue.a` — library
-- `producer` — enqueue example (if examples enabled)
-- `taskqueue_tests` — test runner (if tests enabled)
+- `producer` — enqueue example (if examples are on)
+- `taskqueue_tests` — tests (if tests are on)
 
-Default Redis URI: `tcp://127.0.0.1:6379` (override with `TASKQUEUE_REDIS_URI`).
+Default Redis: `tcp://127.0.0.1:6379`. Override with `TASKQUEUE_REDIS_URI`.
 
 ### Install locally
-
-Install the library, public headers, and CLI (enabled by default via `TASKQUEUE_ENABLE_INSTALL`):
 
 ```bash
 cmake --build build
 cmake --install build --prefix ~/.local --component taskqueue
 ```
 
-Use `--component taskqueue` so only CrunchyTask artifacts are installed (not FetchContent dependencies such as hiredis/redis++).
+Use `--component taskqueue` so you only install this project’s artifacts (not FetchContent deps like hiredis/redis++).
 
-Typical layout (on many 64-bit Linux systems libraries land in `lib64/`):
+On many Linux boxes libraries end up under `lib64/`:
 
 ```text
 ~/.local/bin/taskq
@@ -103,15 +101,13 @@ Typical layout (on many 64-bit Linux systems libraries land in `lib64/`):
 ~/.local/lib64/cmake/taskqueue/taskqueue-config.cmake
 ```
 
-Use a custom prefix, for example `/usr/local`:
+Custom prefix works too, e.g. `/usr/local`:
 
 ```bash
 sudo cmake --install build --prefix /usr/local --component taskqueue
 ```
 
-### Run the CLI after install
-
-Ensure the install prefix is on your `PATH`:
+After install, put the bin dir on your PATH:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -119,24 +115,24 @@ taskq --version
 taskq worker start
 ```
 
-### Use the library from another CMake project
+### Use from another CMake project
 
 ```cmake
 find_package(taskqueue CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE taskqueue::taskqueue)
 ```
 
-When Redis support was enabled at build time, consumers also need `nlohmann_json`, `spdlog`, and `redis++` available to CMake (`find_dependency` runs automatically).
+If Redis support was enabled at build time, you also need `nlohmann_json`, `spdlog`, and `redis++` visible to CMake (`find_dependency` runs from the config).
 
-### Uninstall and clean builds
+### Uninstall / clean
 
-CMake does not provide a built-in uninstall target. To remove an install tree:
+CMake has no uninstall target. To remove what you installed:
 
 ```bash
 xargs rm -vf < build/install_manifest.txt
 ```
 
-To wipe a local build directory and reconfigure from scratch:
+Nuke and reconfigure:
 
 ```bash
 rm -rf build
@@ -144,7 +140,7 @@ cmake -S . -B build
 cmake --build build
 ```
 
-Disable install rules when packaging differently:
+Turn off install rules if you are packaging differently:
 
 ```bash
 cmake -S . -B build -DTASKQUEUE_ENABLE_INSTALL=OFF
@@ -152,18 +148,16 @@ cmake -S . -B build -DTASKQUEUE_ENABLE_INSTALL=OFF
 
 ## Quick start
 
-### Demo (two terminals)
+Start the **worker first**. Tasks sit in `pending` until something reserves them.
 
-Start the **worker first**. Enqueued tasks stay `pending` until a worker reserves them.
-
-Terminal 1 — worker:
+Terminal 1:
 
 ```bash
 docker compose up -d redis
 ./build/taskq worker start --concurrency 4
 ```
 
-Terminal 2 — enqueue and inspect:
+Terminal 2:
 
 ```bash
 TASK_ID=$(./build/taskq enqueue add --payload '{"a":2,"b":3}')
@@ -171,7 +165,7 @@ TASK_ID=$(./build/taskq enqueue add --payload '{"a":2,"b":3}')
 ./build/taskq stats
 ```
 
-Expected status after the worker runs:
+You should see something like:
 
 ```text
 task_id: <uuid>
@@ -179,11 +173,11 @@ status: succeeded
 result: {"result":5}
 ```
 
-If `status` stays `pending`, confirm the worker is running in the other terminal and Redis is up.
+If it stays `pending`, check that Redis is up and the worker is still running in the other terminal.
 
 ## Example task: `add`
 
-The CLI worker registers a built-in handler:
+The stock worker registers a trivial handler:
 
 ```text
 task name: add
@@ -191,71 +185,65 @@ payload:   {"a": <int>, "b": <int>}
 result:    {"result": a + b}
 ```
 
-Enqueue:
-
 ```bash
 ./build/taskq enqueue add --payload '{"a":2,"b":3}'
 ```
 
-Delayed enqueue (5 seconds):
+Delayed by 5 seconds:
 
 ```bash
 ./build/taskq enqueue add --payload '{"a":10,"b":1}' --delay-ms 5000
 ```
 
-Programmatic enqueue (library): see `examples/producer.cc`.
+Library usage: `examples/producer.cc`.
 
 ## CLI reference
 
 | Command | Description |
 |---------|-------------|
 | `taskq -V, --version` | Print version |
-| `taskq enqueue <name> [--payload JSON] [--delay-ms N] [--redis URI]` | Enqueue task; prints task id |
-| `taskq status <task_id> [--redis URI]` | Status, failure reason, result |
+| `taskq enqueue <name> [--payload JSON] [--delay-ms N] [--retry-policy JSON] [--redis URI]` | Enqueue; prints task id |
+| `taskq status <task_id> [--format text\|json] [--redis URI]` | Status, failure reason, result |
+| `taskq result <task_id> [--format text\|json] [--redis URI]` | Result payload only |
 | `taskq stats [--redis URI]` | pending / delayed / running / dead counts |
-| `taskq worker start [--concurrency N] [--visibility-timeout-ms N] [--redis URI]` | Run worker (default visibility timeout: 30s) |
-| `taskq failed list [--redis URI]` | List dead-letter tasks |
+| `taskq worker start [--concurrency N] [--visibility-timeout-ms N] [--redis URI]` | Run worker (default visibility: 30s) |
+| `taskq workers list [--redis URI]` | Active workers (from heartbeats) |
+| `taskq metrics [--format prometheus\|plain] [--redis URI]` | Queue metrics snapshot |
+| `taskq failed list [--format text\|json] [--redis URI]` | Dead-letter tasks |
 | `taskq failed retry <task_id> [--redis URI]` | Requeue a dead task |
 
-## Failure mode matrix
+## When things go wrong
 
-At-least-once delivery applies to several rows below: recovery may cause a task to run more than once. Handlers should be idempotent.
+Same at-least-once story everywhere: recovery can mean duplicate runs. Design for that.
 
-| Failure | Expected behavior | Recovery | Operational caveat |
-|---------|-------------------|----------|-------------------|
-| **Redis is down** | CLI and workers cannot enqueue, reserve, or update state; commands exit with an error. | Restore Redis, then retry the command or restart workers. | No queue durability while Redis is unavailable; unacked in-flight work depends on Redis persistence settings. |
-| **Worker crashes after reserving a task** | Task stays in `running` with a `reserved_at` timestamp. | Scheduler reclaims the task after the visibility timeout (default 30s) and returns it to `pending` for another worker. | The handler may have partially run; duplicate execution is possible after reclaim. |
-| **Handler returns failure** | Worker records a failure and calls `Retry` or `Fail` based on `max_retries`. | Retries go to the delayed queue with exponential backoff; exhausted retries move to the dead-letter queue. | Each failure increments retry metrics; permanent errors should fail fast or use `max_retries: 0`. |
-| **Handler throws (uncaught exception)** | The worker thread aborts that task; no ack, retry, or fail is recorded. | Task remains `running` until visibility timeout reclaim, then follows the crash-after-reserve path. | Validate payloads in the handler and return `TaskResult::Failure`; do not rely on exceptions for control flow. |
-| **Task exceeds visibility timeout** | Stale `running` task is treated as abandoned. | `ReclaimStaleTasks` moves it back to `pending` on the next scheduler tick. | Same duplicate-execution risk as a worker crash; tune `--visibility-timeout-ms` to your worst-case handler runtime. |
-| **Producer enqueues malformed payload** | CLI rejects invalid JSON before enqueue (`invalid JSON payload`). Valid JSON with wrong fields may still enqueue. | Fix the payload and enqueue again; inspect bad tasks with `taskq status` / `taskq failed list`. | The CLI validates JSON syntax only, not task-specific schema; handlers must validate business fields. |
-| **Retry attempts exhausted** | Task moves to the dead-letter queue; status becomes `dead`. | Inspect with `taskq failed list`; requeue manually via `taskq failed retry <task_id>`. | Dead-letter retry resets retry count but does not fix a permanently broken handler or payload. |
-| **Delayed task is due, no worker running** | Task stays in the delayed queue until promoted. | Start a worker; scheduler tick promotes due tasks to `pending`, then they are reserved normally. | Due tasks do not run without a worker; monitor `stats` (`delayed` count) and worker heartbeats (`taskq workers list`). |
-
-Legacy quick reference:
-
-| Scenario | System behavior |
-|----------|-----------------|
-| Unknown task name | Immediate dead-letter (`taskq failed list`) |
-| No worker running (immediate enqueue) | Task remains `pending` |
-| Redis unavailable in tests | Integration tests skip gracefully |
+| Situation | What happens |
+|-----------|----------------|
+| Redis down | Enqueue/reserve/status fail until Redis is back. |
+| Worker dies after reserve | Task stays `running` until visibility timeout (default 30s), then goes back to `pending`. |
+| Handler returns failure (or throws) | Treated as failure; retries with backoff until `max_retries`, then dead-letter. Exceptions are caught and turned into failures. |
+| Handler runs longer than visibility timeout | Reclaimed as stale; may run twice. Tune `--visibility-timeout-ms`. |
+| Bad JSON on CLI | Rejected at enqueue. Wrong field types still enqueue — validate in the handler. |
+| Retries exhausted | `dead`; use `taskq failed list` and `taskq failed retry`. |
+| Delayed task, no worker | Stays delayed until a worker promotes it on the next tick. |
+| Unknown task name | Goes straight to dead-letter. |
+| No worker (immediate enqueue) | Stays `pending`. |
 
 ## Tests
 
 ```bash
-cmake --build build --target check          # full suite (88 tests)
-ctest --test-dir build --output-on-failure  # same as check
+cmake --build build --target check          # full suite (~100 tests)
+ctest --test-dir build --output-on-failure
 
-./build/taskqueue_tests '~[integration]'    # unit only, no Redis
+./build/taskqueue_tests '~[integration]'    # unit only
 docker compose up -d redis
-./build/taskqueue_tests '[integration]'     # Redis integration only
+./build/taskqueue_tests '[integration]'     # needs Redis
 ```
 
-Integration tests use `TASKQUEUE_REDIS_URI` when set (default `tcp://127.0.0.1:6379`). They skip cleanly if Redis is not reachable.
+Integration tests honor `TASKQUEUE_REDIS_URI` and skip if Redis is not reachable.
 
 ## Benchmarks
 
-Operational limit benchmarks live under `benchmarks/` and are **not** run by `check`.
+Under `benchmarks/` — not part of `check`.
 
 ```bash
 docker compose up -d redis
@@ -264,15 +252,10 @@ cmake --build build --target taskqueue_bench
 ./build/taskqueue_bench
 ```
 
-Or use `./benchmarks/run_bench.sh`. Output is JSON (throughput, retry overhead, scheduling/reclaim latency). See [benchmarks/README.md](benchmarks/README.md).
+Or `./benchmarks/run_bench.sh`. JSON output (throughput, retry overhead, scheduling/reclaim latency). Details in [benchmarks/README.md](benchmarks/README.md).
 
 ## Roadmap
 
-**MVP is complete** (queue, worker, Redis broker, retries, delays, dead-letter, crash recovery, CLI, tests).
+Core queue/worker/Redis/retries/delays/DLQ/recovery/heartbeats/metrics/CLI/tests are done.
 
-Optional polish:
-
-- Prometheus metrics and structured observability
-- RabbitMQ or Protobuf wire format
-- Priority queues and routing
-- Worker heartbeat
+Maybe later: another broker backend, priority queues / routing, richer observability (dashboards, alerting hooks).
