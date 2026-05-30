@@ -11,6 +11,7 @@
 #include "taskqueue/metrics.h"
 #include "taskqueue/metrics_snapshot.h"
 #include "taskqueue/runtime_config.h"
+#include "taskqueue/task_json.h"
 #include "taskqueue/task_message.h"
 #include "taskqueue/task_result.h"
 #include "taskqueue/task_status.h"
@@ -74,24 +75,53 @@ tq::TaskHandler MakeAddHandler() {
   };
 }
 
-void PrintTaskStatus(tq::RedisBroker& broker, const tq::TaskId& id) {
+nlohmann::json BuildTaskStatusJson(tq::RedisBroker& broker, const tq::TaskId& id) {
   const auto status = broker.GetStatus(id);
   if (!status.Ok()) {
     ExitWithError(status.Error());
   }
 
-  std::cout << "task_id: " << id.Value() << '\n';
-  std::cout << "status: " << tq::TaskStatusToString(status.Value()) << '\n';
+  nlohmann::json json{
+      {"task_id", id.Value()},
+      {"status", tq::TaskStatusToString(status.Value())},
+      {"failure_reason", nullptr},
+      {"result", nullptr},
+  };
 
   const auto reason = broker.GetFailureReason(id);
   if (reason.Ok()) {
-    std::cout << "failure_reason: " << reason.Value() << '\n';
+    json["failure_reason"] = reason.Value();
   }
 
   const auto result = broker.GetTaskResult(id);
   if (result.Ok()) {
-    std::cout << "result: " << result.Value().payload.dump() << '\n';
+    json["result"] = tq::ToJson(result.Value());
   }
+
+  return json;
+}
+
+void PrintTaskStatus(tq::RedisBroker& broker, const tq::TaskId& id) {
+  const nlohmann::json json = BuildTaskStatusJson(broker, id);
+  std::cout << "task_id: " << json.at("task_id").get<std::string>() << '\n';
+  std::cout << "status: " << json.at("status").get<std::string>() << '\n';
+  if (!json.at("failure_reason").is_null()) {
+    std::cout << "failure_reason: " << json.at("failure_reason").get<std::string>()
+              << '\n';
+  }
+  if (!json.at("result").is_null()) {
+    std::cout << "result: "
+              << json.at("result").at("payload").dump() << '\n';
+  }
+}
+
+void PrintTaskResult(tq::RedisBroker& broker, const tq::TaskId& id) {
+  const auto result = broker.GetTaskResult(id);
+  if (!result.Ok()) {
+    ExitWithError(result.Error());
+  }
+
+  std::cout << result.Value().payload.dump() << '\n';
 }
 
 void PrintStats(const tq::BrokerStats& stats) {
@@ -139,11 +169,14 @@ int main(int argc, char** argv) {
   auto* enqueue_cmd = app.add_subcommand("enqueue", "Enqueue a task");
   std::string task_name;
   std::string payload_json = "{}";
+  std::string retry_policy_json;
   std::int64_t delay_ms = 0;
   enqueue_cmd->add_option("task_name", task_name, "Task name")->required();
   enqueue_cmd->add_option("--payload", payload_json, "JSON payload");
   enqueue_cmd->add_option("--delay-ms", delay_ms,
                           "Delay task execution by this many milliseconds");
+  enqueue_cmd->add_option("--retry-policy", retry_policy_json,
+                          "JSON retry policy object");
   enqueue_cmd->add_option("--redis", redis_uri, "Redis connection URI");
   enqueue_cmd->callback([&]() {
     ValidateOrExit(tq::ValidateRedisUri(redis_uri));
@@ -157,6 +190,15 @@ int main(int argc, char** argv) {
         delay_ms > 0 ? tq::TaskMessage::CreateWithDelay(task_name, payload, delay_ms)
                      : tq::TaskMessage::Create(task_name, payload);
 
+    if (!retry_policy_json.empty()) {
+      const auto parsed_policy =
+          tq::RetryPolicyFromJson(ParsePayloadJson(retry_policy_json));
+      if (!parsed_policy.Ok()) {
+        ExitWithError(parsed_policy.Error());
+      }
+      task.retry_policy = parsed_policy.Value();
+    }
+
     tq::RedisBroker broker(redis_uri);
     const tq::TaskId id = broker.Enqueue(task);
     std::cout << id.Value() << '\n';
@@ -164,7 +206,9 @@ int main(int argc, char** argv) {
 
   auto* status_cmd = app.add_subcommand("status", "Show task status");
   std::string status_task_id;
+  std::string status_format = "text";
   status_cmd->add_option("task_id", status_task_id, "Task id")->required();
+  status_cmd->add_option("--format", status_format, "Output format: text or json");
   status_cmd->add_option("--redis", redis_uri, "Redis connection URI");
   status_cmd->callback([&]() {
     ValidateOrExit(tq::ValidateRedisUri(redis_uri));
@@ -178,7 +222,50 @@ int main(int argc, char** argv) {
     }
 
     tq::RedisBroker broker(redis_uri);
+    if (status_format == "json") {
+      std::cout << BuildTaskStatusJson(broker, parsed_id.Value()).dump() << '\n';
+      return;
+    }
+    if (status_format != "text") {
+      ExitWithError("unsupported status format: " + status_format);
+    }
+
     PrintTaskStatus(broker, parsed_id.Value());
+  });
+
+  auto* result_cmd = app.add_subcommand("result", "Show task result payload");
+  std::string result_task_id;
+  std::string result_format = "text";
+  result_cmd->add_option("task_id", result_task_id, "Task id")->required();
+  result_cmd->add_option("--format", result_format,
+                         "Output format: text or json");
+  result_cmd->add_option("--redis", redis_uri, "Redis connection URI");
+  result_cmd->callback([&]() {
+    ValidateOrExit(tq::ValidateRedisUri(redis_uri));
+    if (!EnsureRedis(redis_uri)) {
+      std::exit(1);
+    }
+
+    const auto parsed_id = tq::TaskId::Parse(result_task_id);
+    if (!parsed_id.Ok()) {
+      ExitWithError(parsed_id.Error());
+    }
+
+    tq::RedisBroker broker(redis_uri);
+    const auto task_result = broker.GetTaskResult(parsed_id.Value());
+    if (!task_result.Ok()) {
+      ExitWithError(task_result.Error());
+    }
+
+    if (result_format == "json") {
+      std::cout << tq::ToJson(task_result.Value()).dump() << '\n';
+      return;
+    }
+    if (result_format != "text") {
+      ExitWithError("unsupported result format: " + result_format);
+    }
+
+    PrintTaskResult(broker, parsed_id.Value());
   });
 
   auto* stats_cmd = app.add_subcommand("stats", "Show queue statistics");
@@ -229,6 +316,9 @@ int main(int argc, char** argv) {
 
   auto* failed_cmd = app.add_subcommand("failed", "Dead-letter queue commands");
   auto* list_cmd = failed_cmd->add_subcommand("list", "List failed tasks");
+  std::string failed_list_format = "text";
+  list_cmd->add_option("--format", failed_list_format,
+                       "Output format: text or json");
   list_cmd->add_option("--redis", redis_uri, "Redis connection URI");
 
   list_cmd->callback([&]() {
@@ -239,6 +329,18 @@ int main(int argc, char** argv) {
 
     tq::RedisBroker broker(redis_uri);
     const auto dead_tasks = broker.ListDeadTasks();
+    if (failed_list_format == "json") {
+      nlohmann::json json = nlohmann::json::array();
+      for (const tq::TaskMessage& task : dead_tasks) {
+        json.push_back(tq::ToJson(task));
+      }
+      std::cout << json.dump() << '\n';
+      return;
+    }
+    if (failed_list_format != "text") {
+      ExitWithError("unsupported failed list format: " + failed_list_format);
+    }
+
     if (dead_tasks.empty()) {
       std::cout << "No failed tasks\n";
       return;

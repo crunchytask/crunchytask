@@ -41,6 +41,28 @@ TEST_CASE("Worker executes registered add task", "[worker]") {
   REQUIRE(broker.RunningCount() == 0);
 }
 
+TEST_CASE("Worker fails tasks when handler throws on invalid payload",
+          "[worker]") {
+  tq::testing::FakeBroker broker;
+  tq::Worker worker(broker);
+  worker.RegisterTask("add", MakeAddHandler());
+
+  tq::TaskMessage task =
+      tq::TaskMessage::Create("add", nlohmann::json{{"a", 1}});
+  task.retry_policy.max_retries = 0;
+  broker.Enqueue(task);
+
+  REQUIRE(worker.RunOnce());
+
+  const auto status = broker.GetStatus(task.id);
+  REQUIRE(status.Ok());
+  REQUIRE(status.Value() == tq::TaskStatus::kDead);
+  const auto failure_reason = broker.GetFailureReason(task.id);
+  REQUIRE(failure_reason.Ok());
+  REQUIRE(failure_reason.Value().find("key 'b' not found") != std::string::npos);
+  REQUIRE(broker.RunningCount() == 0);
+}
+
 TEST_CASE("Worker fails unknown tasks", "[worker]") {
   tq::testing::FakeBroker broker;
   tq::Worker worker(broker);

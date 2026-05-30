@@ -1,0 +1,22 @@
+[project]
+name = "crunchytask"
+version = "0.1.0"
+description = "Python producer client for the CrunchyTask Redis task queue"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crunchytask"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

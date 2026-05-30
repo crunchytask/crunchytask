@@ -1,5 +1,7 @@
 #include "taskqueue/task_registry.h"
 
+#include <exception>
+
 namespace tq {
 
 void TaskRegistry::RegisterTask(std::string name, TaskHandler handler) {
@@ -16,7 +18,14 @@ TaskResult TaskRegistry::Execute(const std::string& name,
   if (handler == handlers_.end()) {
     return TaskResult::Failure("unknown task: " + name);
   }
-  return handler->second(payload);
+
+  try {
+    return handler->second(payload);
+  } catch (const std::exception& exception) {
+    return TaskResult::Failure(exception.what());
+  } catch (...) {
+    return TaskResult::Failure("task handler threw an unknown exception");
+  }
 }
 
 }  // namespace tq
