@@ -70,20 +70,23 @@ TaskId RedisBroker::Enqueue(const TaskMessage& task) {
   message.status = TaskStatus::kPending;
 
   const std::int64_t now_ms = NowUnixMs();
-  const std::string json = ToJson(message).dump();
+  const std::string pending_status = TaskStatusToString(TaskStatus::kPending);
   if (message.run_at_ms.has_value() && *message.run_at_ms > now_ms) {
-    redis_->zadd(redis_keys::kDelayed, json,
-                 static_cast<double>(*message.run_at_ms));
-    redis_->hset(redis_keys::kStatus, message.id.Value(),
-                 TaskStatusToString(TaskStatus::kPending));
+    const std::string json = ToJson(message).dump();
+    auto tx = redis_->transaction();
+    tx.zadd(redis_keys::kDelayed, json, static_cast<double>(*message.run_at_ms));
+    tx.hset(redis_keys::kStatus, message.id.Value(), pending_status);
+    tx.exec();
     RecordCounter(metrics_names::kTasksEnqueuedTotal);
     return message.id;
   }
 
   message.run_at_ms.reset();
-  redis_->lpush(redis_keys::kPending, ToJson(message).dump());
-  redis_->hset(redis_keys::kStatus, message.id.Value(),
-               TaskStatusToString(TaskStatus::kPending));
+  const std::string json = ToJson(message).dump();
+  auto tx = redis_->transaction();
+  tx.lpush(redis_keys::kPending, json);
+  tx.hset(redis_keys::kStatus, message.id.Value(), pending_status);
+  tx.exec();
   RecordCounter(metrics_names::kTasksEnqueuedTotal);
   return message.id;
 }
@@ -123,12 +126,7 @@ int RedisBroker::ReclaimStaleTasks(std::int64_t now_ms,
 }
 
 void RedisBroker::Ack(const TaskId& id) {
-  redis_->hdel(redis_keys::kRunning, id.Value());
-  redis_->hset(redis_keys::kStatus, id.Value(),
-               TaskStatusToString(TaskStatus::kSucceeded));
-  redis_->hset(redis_keys::kResults, id.Value(),
-               ToJson(TaskResult::Success()).dump());
-  redis_->hdel(redis_keys::kFailures, id.Value());
+  scripts_.Ack(id.Value(), ToJson(TaskResult::Success()).dump());
   RecordCounter(metrics_names::kTasksCompletedTotal);
 }
 
@@ -187,26 +185,7 @@ ParseResult<std::string> RedisBroker::GetFailureReason(
 }
 
 ParseResult<TaskId> RedisBroker::RetryDeadTask(const TaskId& id) {
-  std::vector<std::string> json_items;
-  redis_->lrange(redis_keys::kDead, 0, -1, std::back_inserter(json_items));
-
-  for (const auto& json_text : json_items) {
-    const auto parsed = TaskMessageFromJsonString(json_text);
-    if (!parsed.Ok() || parsed.Value().id != id) {
-      continue;
-    }
-
-    redis_->lrem(redis_keys::kDead, 0, json_text);
-
-    TaskMessage message = parsed.Value();
-    message.status = TaskStatus::kPending;
-    message.retry_count = 0;
-    message.last_error.clear();
-    message.run_at_ms.reset();
-    redis_->lpush(redis_keys::kPending, ToJson(message).dump());
-    redis_->hset(redis_keys::kStatus, id.Value(),
-                 TaskStatusToString(TaskStatus::kPending));
-    redis_->hdel(redis_keys::kFailures, id.Value());
+  if (scripts_.RetryDeadTask(id.Value())) {
     return ParseResult<TaskId>::Ok(id);
   }
 

@@ -28,6 +28,8 @@ class RedisScripts {
   void Retry(const std::string& task_id, const std::string& delayed_json,
              double run_at_ms, const std::string& reason);
   void Fail(const std::string& task_id, const std::string& reason);
+  void Ack(const std::string& task_id, const std::string& result_json);
+  bool RetryDeadTask(const std::string& task_id);
 
  private:
   enum class ScriptId {
@@ -36,6 +38,8 @@ class RedisScripts {
     kReclaimOne,
     kRetry,
     kFail,
+    kAck,
+    kRetryDeadTask,
     kCount
   };
 

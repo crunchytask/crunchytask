@@ -208,4 +208,119 @@ TEST_CASE("RedisBroker concurrent promote does not leave delayed tasks stranded"
   REQUIRE(redis.llen(tq::redis_keys::kPending) >= 1);
 }
 
+TEST_CASE("RedisBroker ack keeps status and result coherent", "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  const tq::TaskMessage task = tq::TaskMessage::Create("add", nlohmann::json{});
+  const tq::TaskId id = broker.Enqueue(task);
+  REQUIRE(broker.Reserve().has_value());
+
+  broker.Ack(id);
+
+  const auto status = broker.GetStatus(id);
+  REQUIRE(status.Ok());
+  REQUIRE(status.Value() == tq::TaskStatus::kSucceeded);
+
+  const auto result = broker.GetTaskResult(id);
+  REQUIRE(result.Ok());
+  REQUIRE(result.Value().success);
+
+  REQUIRE_FALSE(redis.hexists(tq::redis_keys::kRunning, id.Value()));
+  REQUIRE(redis.hexists(tq::redis_keys::kResults, id.Value()));
+  REQUIRE_FALSE(redis.hexists(tq::redis_keys::kFailures, id.Value()));
+}
+
+TEST_CASE("RedisBroker retry dead task requeues and clears failure reason",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  const tq::TaskMessage task = tq::TaskMessage::Create("add", nlohmann::json{});
+  broker.Enqueue(task);
+  const auto reserved = broker.Reserve();
+  REQUIRE(reserved.has_value());
+
+  broker.Fail(reserved->id, "handler crashed");
+  REQUIRE(DeadContainsTaskId(redis, reserved->id.Value()));
+
+  const auto retried = broker.RetryDeadTask(reserved->id);
+  REQUIRE(retried.Ok());
+  REQUIRE_FALSE(DeadContainsTaskId(redis, reserved->id.Value()));
+  REQUIRE(PendingContainsTaskId(redis, reserved->id.Value()));
+  REQUIRE_FALSE(redis.hexists(tq::redis_keys::kFailures, reserved->id.Value()));
+
+  const auto status = broker.GetStatus(reserved->id);
+  REQUIRE(status.Ok());
+  REQUIRE(status.Value() == tq::TaskStatus::kPending);
+}
+
+TEST_CASE("RedisBroker retry dead task returns error for missing id",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+
+  const auto parsed_id = tq::TaskId::Parse("550e8400-e29b-41d4-a716-446655440000");
+  REQUIRE(parsed_id.Ok());
+
+  const auto retried = broker.RetryDeadTask(parsed_id.Value());
+  REQUIRE_FALSE(retried.Ok());
+  REQUIRE(retried.Error().find("dead task not found") != std::string::npos);
+}
+
+TEST_CASE("RedisBroker enqueue writes status atomically for immediate tasks",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  const tq::TaskMessage task = tq::TaskMessage::Create("add", nlohmann::json{});
+  const tq::TaskId id = broker.Enqueue(task);
+
+  REQUIRE(redis.llen(tq::redis_keys::kPending) == 1);
+  REQUIRE(redis.hexists(tq::redis_keys::kStatus, id.Value()));
+  const auto status = broker.GetStatus(id);
+  REQUIRE(status.Ok());
+  REQUIRE(status.Value() == tq::TaskStatus::kPending);
+}
+
+TEST_CASE("RedisBroker enqueue writes status atomically for delayed tasks",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  const tq::TaskMessage task =
+      tq::TaskMessage::CreateWithDelay("add", nlohmann::json{}, 5000);
+  broker.Enqueue(task);
+
+  REQUIRE(redis.zcard(tq::redis_keys::kDelayed) == 1);
+  REQUIRE(redis.hexists(tq::redis_keys::kStatus, task.id.Value()));
+  const auto status = broker.GetStatus(task.id);
+  REQUIRE(status.Ok());
+  REQUIRE(status.Value() == tq::TaskStatus::kPending);
+}
+
 #endif  // TASKQUEUE_HAS_REDIS && TASKQUEUE_ENABLE_INTEGRATION_TESTS

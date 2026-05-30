@@ -99,6 +99,38 @@ redis.call('HSET', KEYS[4], task_id, ARGV[3])
 return 1
 )";
 
+constexpr const char kAckScript[] = R"(
+local task_id = ARGV[1]
+redis.call('HDEL', KEYS[1], task_id)
+redis.call('HSET', KEYS[2], task_id, ARGV[3])
+redis.call('HSET', KEYS[3], task_id, ARGV[2])
+redis.call('HDEL', KEYS[4], task_id)
+return 1
+)";
+
+constexpr const char kRetryDeadTaskScript[] = R"(
+local task_id = ARGV[1]
+local items = redis.call('LRANGE', KEYS[1], 0, -1)
+for _, json in ipairs(items) do
+  local ok, msg = pcall(cjson.decode, json)
+  if ok and type(msg) == 'table' and msg['id'] == task_id then
+    if redis.call('LREM', KEYS[1], 1, json) == 0 then
+      return 0
+    end
+    msg['status'] = 'pending'
+    msg['retry_count'] = 0
+    msg['last_error'] = nil
+    msg['run_at_ms'] = nil
+    msg['reserved_at_ms'] = nil
+    redis.call('LPUSH', KEYS[2], cjson.encode(msg))
+    redis.call('HSET', KEYS[3], task_id, 'pending')
+    redis.call('HDEL', KEYS[4], task_id)
+    return 1
+  end
+end
+return 0
+)";
+
 bool IsNoScriptError(const sw::redis::Error& error) {
   const std::string message = error.what();
   return message.find("NOSCRIPT") != std::string::npos;
@@ -112,6 +144,8 @@ RedisScripts::RedisScripts(sw::redis::Redis& redis) : redis_(redis) {
   sources_[static_cast<std::size_t>(ScriptId::kReclaimOne)] = kReclaimOneScript;
   sources_[static_cast<std::size_t>(ScriptId::kRetry)] = kRetryScript;
   sources_[static_cast<std::size_t>(ScriptId::kFail)] = kFailScript;
+  sources_[static_cast<std::size_t>(ScriptId::kAck)] = kAckScript;
+  sources_[static_cast<std::size_t>(ScriptId::kRetryDeadTask)] = kRetryDeadTaskScript;
   LoadScripts();
 }
 
@@ -190,6 +224,23 @@ void RedisScripts::Fail(const std::string& task_id, const std::string& reason) {
                   {redis_keys::kRunning, redis_keys::kDead, redis_keys::kFailures,
                    redis_keys::kStatus},
                   args);
+}
+
+void RedisScripts::Ack(const std::string& task_id, const std::string& result_json) {
+  const std::vector<std::string> args = {
+      task_id, result_json, TaskStatusToString(TaskStatus::kSucceeded)};
+  Eval<long long>(ScriptId::kAck,
+                  {redis_keys::kRunning, redis_keys::kStatus, redis_keys::kResults,
+                   redis_keys::kFailures},
+                  args);
+}
+
+bool RedisScripts::RetryDeadTask(const std::string& task_id) {
+  const std::vector<std::string> args = {task_id};
+  return Eval<long long>(ScriptId::kRetryDeadTask,
+                         {redis_keys::kDead, redis_keys::kPending, redis_keys::kStatus,
+                          redis_keys::kFailures},
+                         args) == 1;
 }
 
 template sw::redis::OptionalString RedisScripts::Eval<sw::redis::OptionalString>(
