@@ -1,0 +1,12 @@
+CompileFlags:
+  CompilationDatabase: build
+
+---
+If:
+  PathMatch: benchmarks/.*
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -Iinclude
+    - -Ibenchmarks
+    - -Ibuild/_deps/nlohmann_json-src/include

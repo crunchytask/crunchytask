@@ -3,7 +3,6 @@
 #include "bench_harness.h"
 
 #include <thread>
-#include <utility>
 
 #include "taskqueue/broker_stats.h"
 #include "taskqueue/clock.h"
