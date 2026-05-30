@@ -12,6 +12,7 @@
 #include "taskqueue/redis_keys.h"
 #include "taskqueue/task_json.h"
 #include "taskqueue/task_message.h"
+#include "taskqueue/task_result.h"
 
 namespace {
 
@@ -208,7 +209,8 @@ TEST_CASE("RedisBroker concurrent promote does not leave delayed tasks stranded"
   REQUIRE(redis.llen(tq::redis_keys::kPending) >= 1);
 }
 
-TEST_CASE("RedisBroker ack keeps status and result coherent", "[integration][atomicity]") {
+TEST_CASE("RedisBroker ack updates status and result atomically",
+          "[integration][atomicity]") {
   if (tq::testing::SkipIfNoRedis()) {
     return;
   }
@@ -221,6 +223,8 @@ TEST_CASE("RedisBroker ack keeps status and result coherent", "[integration][ato
   const tq::TaskId id = broker.Enqueue(task);
   REQUIRE(broker.Reserve().has_value());
 
+  redis.hset(tq::redis_keys::kFailures, id.Value(), "stale failure");
+
   broker.Ack(id);
 
   const auto status = broker.GetStatus(id);
@@ -231,9 +235,14 @@ TEST_CASE("RedisBroker ack keeps status and result coherent", "[integration][ato
   REQUIRE(result.Ok());
   REQUIRE(result.Value().success);
 
+  const auto stored_result = redis.hget(tq::redis_keys::kResults, id.Value());
+  REQUIRE(stored_result.has_value());
+  REQUIRE(*stored_result == tq::ToJson(tq::TaskResult::Success()).dump());
+
   REQUIRE_FALSE(redis.hexists(tq::redis_keys::kRunning, id.Value()));
-  REQUIRE(redis.hexists(tq::redis_keys::kResults, id.Value()));
   REQUIRE_FALSE(redis.hexists(tq::redis_keys::kFailures, id.Value()));
+  REQUIRE_FALSE(PendingContainsTaskId(redis, id.Value()));
+  REQUIRE_FALSE(DeadContainsTaskId(redis, id.Value()));
 }
 
 TEST_CASE("RedisBroker retry dead task requeues and clears failure reason",
@@ -263,6 +272,65 @@ TEST_CASE("RedisBroker retry dead task requeues and clears failure reason",
   const auto status = broker.GetStatus(reserved->id);
   REQUIRE(status.Ok());
   REQUIRE(status.Value() == tq::TaskStatus::kPending);
+}
+
+TEST_CASE("RedisBroker duplicate retry dead task fails after first success",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  const tq::TaskMessage task = tq::TaskMessage::Create("add", nlohmann::json{});
+  broker.Enqueue(task);
+  const auto reserved = broker.Reserve();
+  REQUIRE(reserved.has_value());
+
+  broker.Fail(reserved->id, "handler crashed");
+  REQUIRE(DeadContainsTaskId(redis, reserved->id.Value()));
+
+  const auto first_retry = broker.RetryDeadTask(reserved->id);
+  REQUIRE(first_retry.Ok());
+  REQUIRE_FALSE(DeadContainsTaskId(redis, reserved->id.Value()));
+  REQUIRE(PendingContainsTaskId(redis, reserved->id.Value()));
+
+  const auto second_retry = broker.RetryDeadTask(reserved->id);
+  REQUIRE_FALSE(second_retry.Ok());
+  REQUIRE(second_retry.Error().find("dead task not found") != std::string::npos);
+  REQUIRE(PendingContainsTaskId(redis, reserved->id.Value()));
+  REQUIRE(redis.llen(tq::redis_keys::kPending) == 1);
+}
+
+TEST_CASE("RedisBroker promote syncs status after delayed retry",
+          "[integration][atomicity]") {
+  if (tq::testing::SkipIfNoRedis()) {
+    return;
+  }
+
+  ClearBrokerKeys(tq::testing::RedisUri());
+  tq::RedisBroker broker(tq::testing::RedisUri());
+  sw::redis::Redis redis(tq::testing::RedisUri());
+
+  tq::TaskMessage task = tq::TaskMessage::Create("add", nlohmann::json{});
+  task.retry_policy.base_delay_ms = 0;
+  broker.Enqueue(task);
+  const auto reserved = broker.Reserve();
+  REQUIRE(reserved.has_value());
+
+  broker.Retry(*reserved, "transient");
+  const auto retrying_status = broker.GetStatus(task.id);
+  REQUIRE(retrying_status.Ok());
+  REQUIRE(retrying_status.Value() == tq::TaskStatus::kRetrying);
+
+  broker.PromoteDueTasks(tq::NowUnixMs() + 1);
+  REQUIRE(PendingContainsTaskId(redis, task.id.Value()));
+
+  const auto pending_status = broker.GetStatus(task.id);
+  REQUIRE(pending_status.Ok());
+  REQUIRE(pending_status.Value() == tq::TaskStatus::kPending);
 }
 
 TEST_CASE("RedisBroker retry dead task returns error for missing id",

@@ -35,5 +35,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local environment (use .env.example as template)
+.env
+
 # Other
 internal_docs/

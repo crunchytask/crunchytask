@@ -6,6 +6,8 @@ A small C++20 task queue backed by Redis. You enqueue JSON jobs from the CLI or 
 
 I built this as a systems/portfolio project to get my hands dirty with concurrency, a real broker, and the boring failure cases (retries, stale leases, DLQ) rather than only happy-path demos.
 
+**Releases:** [v0.1.0](https://github.com/crunchytask/crunchytask/releases/tag/v0.1.0) is the first public release. The next patch, **v0.1.1**, will focus on further Redis atomicity polish — see [CHANGELOG.md](CHANGELOG.md).
+
 ## What it does
 
 - Enqueue named tasks with a JSON payload (`taskq enqueue`)
@@ -67,7 +69,7 @@ Redis also holds `taskq:results` (success payloads), `taskq:failures` (latest er
 **You need:** CMake 3.24+, a C++20 compiler, Docker if you want the bundled Redis compose file.
 
 ```bash
-git clone <repo>
+git clone https://github.com/crunchytask/crunchytask.git
 cd crunchytask
 
 cmake -S . -B build
@@ -81,7 +83,7 @@ Outputs in `build/`:
 - `producer` — enqueue example (if examples are on)
 - `taskqueue_tests` — tests (if tests are on)
 
-Default Redis: `tcp://127.0.0.1:6379`. Override with `TASKQUEUE_REDIS_URI`.
+Default Redis: `tcp://127.0.0.1:6379`. Override with `TASKQUEUE_REDIS_URI` (see [.env.example](.env.example)).
 
 ### Install locally
 
@@ -256,6 +258,8 @@ Or `./benchmarks/run_bench.sh`. JSON output (throughput, retry overhead, schedul
 
 ## Roadmap
 
-Core queue/worker/Redis/retries/delays/DLQ/recovery/heartbeats/metrics/CLI/tests are done.
+**v0.1.0 (released):** core queue, Redis broker with Phase A atomic Lua transitions, worker/CLI, retries, delays, DLQ, crash recovery, heartbeats, metrics, benchmarks, Python client, and tests.
 
-Maybe later: another broker backend, priority queues / routing, richer observability (dashboards, alerting hooks).
+**v0.1.1 (in progress):** Phase B atomicity polish on the Redis broker (ack, dead-letter retry, enqueue transactions); no public API changes planned.
+
+**Later:** another broker backend, priority queues / routing, richer observability (dashboards, alerting hooks).

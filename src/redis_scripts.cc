@@ -31,6 +31,7 @@ return running_json
 
 constexpr const char kPromoteOneScript[] = R"(
 local now_ms = tonumber(ARGV[1])
+local pending_status = ARGV[2]
 local items = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms, 'LIMIT', 0, 1)
 if #items == 0 then
   return 0
@@ -40,12 +41,13 @@ if redis.call('ZREM', KEYS[1], member) == 0 then
   return 0
 end
 local ok, msg = pcall(cjson.decode, member)
-if not ok or type(msg) ~= 'table' then
+if not ok or type(msg) ~= 'table' or not msg['id'] then
   return 0
 end
 msg['run_at_ms'] = nil
 msg['status'] = 'pending'
 redis.call('LPUSH', KEYS[2], cjson.encode(msg))
+redis.call('HSET', KEYS[3], msg['id'], pending_status)
 return 1
 )";
 
@@ -101,9 +103,11 @@ return 1
 
 constexpr const char kAckScript[] = R"(
 local task_id = ARGV[1]
+local result_json = ARGV[2]
+local succeeded_status = ARGV[3]
 redis.call('HDEL', KEYS[1], task_id)
-redis.call('HSET', KEYS[2], task_id, ARGV[3])
-redis.call('HSET', KEYS[3], task_id, ARGV[2])
+redis.call('HSET', KEYS[2], task_id, succeeded_status)
+redis.call('HSET', KEYS[3], task_id, result_json)
 redis.call('HDEL', KEYS[4], task_id)
 return 1
 )";
@@ -190,9 +194,11 @@ std::optional<std::string> RedisScripts::Reserve(const std::int64_t reserved_at_
 }
 
 int RedisScripts::PromoteOneDueTask(const std::int64_t now_ms) {
-  const std::vector<std::string> args = {std::to_string(now_ms)};
+  const std::vector<std::string> args = {std::to_string(now_ms),
+                                         TaskStatusToString(TaskStatus::kPending)};
   return static_cast<int>(Eval<long long>(
-      ScriptId::kPromoteOne, {redis_keys::kDelayed, redis_keys::kPending}, args));
+      ScriptId::kPromoteOne,
+      {redis_keys::kDelayed, redis_keys::kPending, redis_keys::kStatus}, args));
 }
 
 int RedisScripts::ReclaimOneStaleTask(const std::string& task_id,
