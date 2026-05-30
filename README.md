@@ -221,7 +221,7 @@ Same at-least-once story everywhere: recovery can mean duplicate runs. Design fo
 | Situation | What happens |
 |-----------|----------------|
 | Redis down | Enqueue/reserve/status fail until Redis is back. |
-| Worker dies after reserve | Task stays `running` until visibility timeout (default 30s), then goes back to `pending`. |
+| Worker dies after reserve | Reserve is atomic (Lua): pending → `running` with `reserved_at_ms`. If reserve succeeded, the task stays in `running` until visibility timeout (default 30s), then reclaim returns it to `pending`. |
 | Handler returns failure (or throws) | Treated as failure; retries with backoff until `max_retries`, then dead-letter. Exceptions are caught and turned into failures. |
 | Handler runs longer than visibility timeout | Reclaimed as stale; may run twice. Tune `--visibility-timeout-ms`. |
 | Bad JSON on CLI | Rejected at enqueue. Wrong field types still enqueue — validate in the handler. |

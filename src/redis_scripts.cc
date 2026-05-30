@@ -12,6 +12,10 @@ namespace tq {
 
 namespace {
 
+// Reserve is one Lua script: RPOP pending and HSET running/status together.
+// Visibility-timeout reclaim only applies after a successful reserve, when the
+// task is in taskq:running with reserved_at_ms set. A non-atomic RPOP without
+// writing running would lose the task on worker crash.
 constexpr const char kReserveScript[] = R"(
 local json = redis.call('RPOP', KEYS[1])
 if not json then
