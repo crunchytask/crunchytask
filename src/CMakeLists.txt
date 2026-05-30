@@ -19,7 +19,7 @@ add_library(
 )
 
 if(TASKQUEUE_ENABLE_REDIS)
-  target_sources(taskqueue PRIVATE redis_broker.cc)
+  target_sources(taskqueue PRIVATE redis_broker.cc redis_scripts.cc)
   target_compile_options(
     taskqueue
     PUBLIC

@@ -6,6 +6,7 @@ add_executable(taskqueue_tests
   crash_recovery_test.cc
   delayed_task_test.cc
   redis_broker_integration_test.cc
+  redis_atomicity_test.cc
   task_json_test.cc
   retry_policy_test.cc
   runtime_config_test.cc

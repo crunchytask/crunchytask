@@ -48,7 +48,8 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
 }  // namespace
 
 RedisBroker::RedisBroker(std::string redis_uri)
-    : redis_(std::make_unique<sw::redis::Redis>(std::move(redis_uri))) {}
+    : redis_(std::make_unique<sw::redis::Redis>(std::move(redis_uri))),
+      scripts_(*redis_) {}
 
 RedisBroker::~RedisBroker() = default;
 
@@ -88,44 +89,22 @@ TaskId RedisBroker::Enqueue(const TaskMessage& task) {
 }
 
 void RedisBroker::PromoteDueTasks(std::int64_t now_ms) {
-  std::vector<std::string> due_tasks;
-  redis_->zrangebyscore(
-      redis_keys::kDelayed,
-      sw::redis::RightBoundedInterval<double>(static_cast<double>(now_ms),
-                                              sw::redis::BoundType::LEFT_OPEN),
-      std::back_inserter(due_tasks));
-
-  for (const auto& json_text : due_tasks) {
-    redis_->zrem(redis_keys::kDelayed, json_text);
-    const auto parsed = TaskMessageFromJsonString(json_text);
-    if (!parsed.Ok()) {
-      continue;
-    }
-
-    TaskMessage message = parsed.Value();
-    message.run_at_ms.reset();
-    redis_->lpush(redis_keys::kPending, ToJson(message).dump());
+  while (scripts_.PromoteOneDueTask(now_ms) > 0) {
   }
 }
 
 std::optional<TaskMessage> RedisBroker::Reserve() {
-  auto json_text = redis_->rpop(redis_keys::kPending);
-  if (!json_text) {
+  const auto running_json = scripts_.Reserve(NowUnixMs());
+  if (!running_json.has_value()) {
     return std::nullopt;
   }
 
-  const auto parsed = TaskMessageFromJsonString(*json_text);
+  const auto parsed = TaskMessageFromJsonString(*running_json);
   if (!parsed.Ok()) {
     return std::nullopt;
   }
 
-  TaskMessage message = parsed.Value();
-  message.status = TaskStatus::kRunning;
-  message.reserved_at_ms = NowUnixMs();
-  redis_->hset(redis_keys::kRunning, message.id.Value(), ToJson(message).dump());
-  redis_->hset(redis_keys::kStatus, message.id.Value(),
-               TaskStatusToString(TaskStatus::kRunning));
-  return message;
+  return parsed.Value();
 }
 
 int RedisBroker::ReclaimStaleTasks(std::int64_t now_ms,
@@ -136,24 +115,8 @@ int RedisBroker::ReclaimStaleTasks(std::int64_t now_ms,
 
   int reclaimed = 0;
   for (const auto& entry : running_tasks) {
-    const auto parsed = TaskMessageFromJsonString(entry.second);
-    if (!parsed.Ok() || !parsed.Value().reserved_at_ms.has_value()) {
-      continue;
-    }
-
-    const TaskMessage& message = parsed.Value();
-    if (now_ms - *message.reserved_at_ms <= visibility_timeout_ms) {
-      continue;
-    }
-
-    TaskMessage requeued = message;
-    requeued.status = TaskStatus::kPending;
-    requeued.reserved_at_ms.reset();
-    redis_->hdel(redis_keys::kRunning, entry.first);
-    redis_->lpush(redis_keys::kPending, ToJson(requeued).dump());
-    redis_->hset(redis_keys::kStatus, entry.first,
-                 TaskStatusToString(TaskStatus::kPending));
-    ++reclaimed;
+    reclaimed += scripts_.ReclaimOneStaleTask(entry.first, now_ms,
+                                              visibility_timeout_ms);
   }
 
   return reclaimed;
@@ -170,8 +133,6 @@ void RedisBroker::Ack(const TaskId& id) {
 }
 
 void RedisBroker::Retry(const TaskMessage& task, const std::string& reason) {
-  redis_->hdel(redis_keys::kRunning, task.id.Value());
-
   TaskMessage retry_task = task;
   retry_task.retry_count += 1;
   retry_task.last_error = reason;
@@ -182,34 +143,13 @@ void RedisBroker::Retry(const TaskMessage& task, const std::string& reason) {
                                         retry_task.retry_count);
 
   const std::string json = ToJson(retry_task).dump();
-  redis_->zadd(redis_keys::kDelayed, json,
-               static_cast<double>(*retry_task.run_at_ms));
-  redis_->hset(redis_keys::kStatus, task.id.Value(),
-               TaskStatusToString(TaskStatus::kRetrying));
-  redis_->hset(redis_keys::kFailures, task.id.Value(), reason);
+  scripts_.Retry(task.id.Value(), json,
+                 static_cast<double>(*retry_task.run_at_ms), reason);
   RecordCounter(metrics_names::kTasksRetriedTotal);
 }
 
 void RedisBroker::Fail(const TaskId& id, const std::string& reason) {
-  TaskMessage message;
-  message.id = id;
-
-  const auto running_json = redis_->hget(redis_keys::kRunning, id.Value());
-  redis_->hdel(redis_keys::kRunning, id.Value());
-
-  if (running_json) {
-    const auto parsed = TaskMessageFromJsonString(*running_json);
-    if (parsed.Ok()) {
-      message = parsed.Value();
-    }
-    message.status = TaskStatus::kDead;
-    message.last_error = reason;
-    redis_->lpush(redis_keys::kDead, ToJson(message).dump());
-  }
-
-  redis_->hset(redis_keys::kFailures, id.Value(), reason);
-  redis_->hset(redis_keys::kStatus, id.Value(),
-               TaskStatusToString(TaskStatus::kDead));
+  scripts_.Fail(id.Value(), reason);
   RecordCounter(metrics_names::kTasksDeadLetteredTotal);
 }
 

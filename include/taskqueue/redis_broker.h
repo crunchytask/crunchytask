@@ -5,6 +5,7 @@
 #include <string>
 
 #include "taskqueue/broker.h"
+#include "taskqueue/redis_scripts.h"
 
 namespace sw {
 namespace redis {
@@ -47,6 +48,7 @@ class RedisBroker final : public Broker {
   void RecordRedisOperationError();
 
   mutable std::unique_ptr<sw::redis::Redis> redis_;
+  RedisScripts scripts_;
 };
 
 }  // namespace tq
